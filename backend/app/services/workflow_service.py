@@ -35,21 +35,17 @@ class WorkflowService:
         self.redis = redis
 
     async def create_and_execute(self, data: WorkflowCreate) -> Workflow:
-        """Create a workflow, decompose the prompt, and execute it.
+        """Create a workflow and execute it via the intelligent strategy router.
 
-        This is the main entry point that drives the entire orchestration pipeline:
-        1. Create workflow record
-        2. Discover available agent capabilities
-        3. Decompose prompt into DAG
-        4. Assign agents to DAG nodes
-        5. Execute the DAG
+        Flow: Create → Interpret Goal → Plan Strategy → Execute
+        When the planner selects DAG_PIPELINE, behavior is identical to v1.
         """
         # 1. Create workflow
         workflow = Workflow(
             user_id=data.user_id,
             prompt=data.prompt,
             domain=data.domain,
-            status=WorkflowStatus.DECOMPOSING,
+            status=WorkflowStatus.PENDING,
             budget_limit=data.budget_limit,
             priority=data.priority,
             metadata_=data.metadata,
@@ -65,46 +61,26 @@ class WorkflowService:
         )
 
         try:
-            # 2. Get available capabilities from registry
-            result = await self.session.execute(
-                select(Agent.capabilities)
-                .where(Agent.status.in_(["active", "degraded"]))
-            )
-            all_caps: set[str] = set()
-            for row in result.all():
-                caps = row[0]
-                if isinstance(caps, list):
-                    all_caps.update(caps)
+            # 2. Interpret goal
+            from app.intelligence.goal_interpreter import GoalInterpreter
+            from app.intelligence.planner import AdaptivePlanner
+            from app.intelligence.strategy_router import StrategyRouter
 
-            if not all_caps:
-                raise OrchestrationError("No agents available in the registry")
+            goal = await GoalInterpreter().interpret(data.prompt)
 
-            # 3. Decompose prompt into DAG
-            decomposer = TaskDecomposer()
-            dag, detected_domain = await decomposer.decompose(
-                prompt=data.prompt,
-                available_capabilities=sorted(all_caps),
-                domain_hint=data.domain,
-            )
-
-            workflow.domain = detected_domain
-            workflow.dag_snapshot = dag.to_dict()
-            await self.session.flush()
+            # 3. Plan execution strategy
+            plan = AdaptivePlanner().plan(goal, float(data.budget_limit))
 
             logger.info(
-                "workflow_decomposed",
+                "workflow_planned",
                 workflow_id=str(workflow.workflow_id),
-                domain=detected_domain,
-                tasks=len(dag.nodes),
+                mode=plan.mode.value,
+                reasoning=plan.reasoning[:100],
             )
 
-            # 4. Assign agents
-            selector = AgentSelector(self.session)
-            agents = await selector.select_agents_for_dag(dag, float(data.budget_limit))
-
-            # 5. Execute
-            scheduler = WorkflowScheduler(self.session, self.redis)
-            result = await scheduler.execute_workflow(workflow, dag, agents)
+            # 4. Execute via strategy router
+            router = StrategyRouter(self.session, self.redis)
+            result = await router.execute(plan, workflow)
 
             return workflow
 

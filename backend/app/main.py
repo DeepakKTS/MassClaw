@@ -96,11 +96,6 @@ def create_app() -> FastAPI:
 
     app.include_router(system_router, prefix="/system", tags=["System"])
 
-    # Mount system monitoring routes
-    from app.api.system import router as system_router
-
-    app.include_router(system_router, prefix="/system", tags=["System"])
-
     @app.get("/health", tags=["System"])
     async def health_check() -> dict[str, Any]:
         """System health endpoint checking DB and Redis connectivity."""

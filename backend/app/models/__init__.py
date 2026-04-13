@@ -10,3 +10,6 @@ from app.models.wallet import WalletEvent  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.policy import PolicyRule  # noqa: F401
 from app.models.score import AgentScore  # noqa: F401
+from app.models.task_test import TaskTest  # noqa: F401
+from app.models.project import Project, BacklogTask, Sprint, SprintTask  # noqa: F401
+from app.models.reasoning import ReasoningTrace  # noqa: F401

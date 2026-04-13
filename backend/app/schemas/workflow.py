@@ -41,6 +41,9 @@ class WorkflowResponse(BaseModel):
     metadata: dict = Field(alias="metadata_")
     dag_snapshot: dict | None
     result: dict | None
+    execution_mode: str | None = None
+    goal_snapshot: dict | None = None
+    reasoning_summary: dict | None = None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime

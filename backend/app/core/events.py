@@ -200,6 +200,78 @@ class ScoreRecordedEvent(BaseEvent):
         )
 
 
+class TaskStatusChangedEvent(BaseEvent):
+    """Fired when a task's status changes."""
+
+    event_type: str = "task.status_changed"
+
+    @staticmethod
+    def create(
+        task_id: str,
+        workflow_id: str,
+        old_status: str,
+        new_status: str,
+        action: str,
+    ) -> TaskStatusChangedEvent:
+        return TaskStatusChangedEvent(
+            data={
+                "task_id": task_id,
+                "workflow_id": workflow_id,
+                "old_status": old_status,
+                "new_status": new_status,
+                "action": action,
+            },
+        )
+
+
+class TaskOverriddenEvent(BaseEvent):
+    """Fired when a task is manually overridden."""
+
+    event_type: str = "task.overridden"
+
+    @staticmethod
+    def create(
+        task_id: str,
+        workflow_id: str,
+        action: str,
+        old_status: str,
+        new_status: str,
+        reason: str | None = None,
+    ) -> TaskOverriddenEvent:
+        return TaskOverriddenEvent(
+            data={
+                "task_id": task_id,
+                "workflow_id": workflow_id,
+                "action": action,
+                "old_status": old_status,
+                "new_status": new_status,
+                "reason": reason,
+            },
+        )
+
+
+class TaskTestResultEvent(BaseEvent):
+    """Fired when a task test assertion is evaluated."""
+
+    event_type: str = "task.test_result"
+
+    @staticmethod
+    def create(
+        task_id: str,
+        test_id: str,
+        test_name: str,
+        status: str,
+    ) -> TaskTestResultEvent:
+        return TaskTestResultEvent(
+            data={
+                "task_id": task_id,
+                "test_id": test_id,
+                "test_name": test_name,
+                "status": status,
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # Event Bus
 # ---------------------------------------------------------------------------

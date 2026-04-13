@@ -110,11 +110,18 @@ class DAG:
         return result
 
     def get_ready_nodes(self) -> list[DAGNode]:
-        """Get nodes whose dependencies are ALL completed and that are still pending."""
+        """Get nodes whose dependencies are ALL completed and that are still pending/todo."""
         ready = []
         for node in self._nodes.values():
-            if node.status != TaskStatus.PENDING:
+            if node.status not in (TaskStatus.PENDING, TaskStatus.TODO):
                 continue
+            # Check if any dependency failed/skipped → block this node
+            any_dep_failed = any(
+                self._nodes[dep].status in (TaskStatus.FAILED, TaskStatus.SKIPPED)
+                for dep in node.depends_on
+            )
+            if any_dep_failed:
+                continue  # Will be handled by mark_failed cascade
             deps_met = all(
                 self._nodes[dep].status == TaskStatus.COMPLETED
                 for dep in node.depends_on
@@ -151,13 +158,19 @@ class DAG:
             seen.add(child_id)
 
             child = self._nodes[child_id]
-            if child.status == TaskStatus.PENDING:
+            if child.status in (TaskStatus.PENDING, TaskStatus.TODO, TaskStatus.BLOCKED):
                 child.status = TaskStatus.SKIPPED
                 child.error = f"Skipped: dependency '{node_id}' failed"
                 skipped.append(child_id)
                 to_skip.extend(self._adjacency[child_id])
 
         return skipped
+
+    def mark_blocked(self, node_id: str, reason: str | None = None) -> None:
+        """Mark a node as blocked."""
+        node = self.get_node(node_id)
+        node.status = TaskStatus.BLOCKED
+        node.error = reason or "Blocked by dependency or manual action"
 
     def mark_running(self, node_id: str) -> None:
         """Mark a node as currently running."""

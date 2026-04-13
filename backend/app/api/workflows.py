@@ -5,9 +5,11 @@ import uuid
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.database import db_session_context
+from app.core.database import db_session_context, get_db_session
 from app.core.events import EventBus
 from app.core.redis import get_redis_manager
 from app.dependencies import get_workflow_service
@@ -128,3 +130,31 @@ async def stream_workflow(workflow_id: uuid.UUID) -> EventSourceResponse:
                 break
 
     return EventSourceResponse(event_generator())
+
+
+@router.get("/{workflow_id}/reasoning")
+async def get_reasoning_traces(
+    workflow_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict]:
+    """Get reasoning traces for a workflow."""
+    from app.models.reasoning import ReasoningTrace
+    result = await session.execute(
+        select(ReasoningTrace)
+        .where(ReasoningTrace.workflow_id == workflow_id)
+        .order_by(ReasoningTrace.created_at)
+    )
+    traces = result.scalars().all()
+    return [
+        {
+            "trace_id": str(t.trace_id),
+            "iteration": t.iteration,
+            "phase": t.phase,
+            "event_type": t.event_type,
+            "content": t.content,
+            "confidence": t.confidence,
+            "metadata": t.metadata_,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in traces
+    ]

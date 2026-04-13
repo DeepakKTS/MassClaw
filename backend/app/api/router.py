@@ -28,6 +28,10 @@ from app.api.evolution import router as evolution_router
 
 api_router.include_router(evolution_router, prefix="/evolution", tags=["Evolution"])
 
+from app.api.projects import router as projects_router
+
+api_router.include_router(projects_router, prefix="/projects", tags=["Projects"])
+
 
 @api_router.get("/", tags=["System"])
 async def api_root() -> dict[str, str]:

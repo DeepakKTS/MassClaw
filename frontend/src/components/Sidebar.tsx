@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
 import {
-  LayoutDashboard, Bot, GitBranch, Brain, Shield, Wallet, Trophy, FileText, Settings
+  LayoutDashboard, Bot, GitBranch, Brain, Shield, Wallet, Trophy, FolderKanban, FileText, Settings
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: "/trust", label: "Trust", icon: Shield },
   { href: "/wallet", label: "Wallet", icon: Wallet },
   { href: "/evolution", label: "Evolution", icon: Trophy },
+  { href: "/planning", label: "Planning", icon: FolderKanban },
   { href: "/audit", label: "Audit", icon: FileText },
   { href: "/policy", label: "Policy", icon: Settings },
 ];

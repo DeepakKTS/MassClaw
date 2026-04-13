@@ -162,3 +162,29 @@ async def get_evolution_service(
     redis: aioredis.Redis = Depends(get_redis),
 ) -> EvolutionService:
     return EvolutionService(session=session, redis=redis)
+
+
+from app.services.project_service import ProjectService
+from app.services.task_service import TaskService
+from app.services.task_test_service import TaskTestService
+
+
+async def get_task_service(
+    session: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> TaskService:
+    return TaskService(session=session, redis=redis)
+
+
+async def get_task_test_service(
+    session: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> TaskTestService:
+    return TaskTestService(session=session, redis=redis)
+
+
+async def get_project_service(
+    session: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> ProjectService:
+    return ProjectService(session=session, redis=redis)

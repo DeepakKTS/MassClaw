@@ -48,6 +48,7 @@ class WorkflowStatus(str, enum.Enum):
 
 
 class TaskStatus(str, enum.Enum):
+    TODO = "todo"
     PENDING = "pending"
     ASSIGNED = "assigned"
     RUNNING = "running"
@@ -55,6 +56,7 @@ class TaskStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    BLOCKED = "blocked"
 
 
 class MemoryType(str, enum.Enum):

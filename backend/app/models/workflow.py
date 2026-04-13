@@ -70,6 +70,15 @@ class Workflow(Base, AuditMixin):
     result: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True
     )
+    execution_mode: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    goal_snapshot: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    reasoning_summary: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
