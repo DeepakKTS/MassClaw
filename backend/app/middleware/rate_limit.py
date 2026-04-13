@@ -12,12 +12,19 @@ from app.core.redis import get_redis_manager
 # Paths exempt from rate limiting
 EXEMPT_PATHS = {"/health", "/metrics", "/api/v1/workflows/{id}/stream"}
 
+# Path prefixes exempt from rate limiting (polling endpoints)
+EXEMPT_PREFIXES = ("/api/v1/workflows/", "/api/v1/tasks/", "/api/v1/wallet/")
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Redis-backed sliding window rate limiter."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path in EXEMPT_PATHS or request.method == "OPTIONS":
+            return await call_next(request)
+
+        # Exempt polling endpoints (GET on workflow/task/wallet status)
+        if request.method == "GET" and any(request.url.path.startswith(p) for p in EXEMPT_PREFIXES):
             return await call_next(request)
 
         settings = get_settings()
