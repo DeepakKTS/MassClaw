@@ -50,8 +50,9 @@ class GoalInterpreter:
         try:
             response = await self.router.generate(
                 prompt=GOAL_INTERPRETATION_PROMPT.format(prompt=prompt),
-                max_tokens=500,
-                temperature=0.2,
+                model="claude-sonnet-4-20250514",  # Haiku for cheap structured parsing
+                max_tokens=300,
+                temperature=0.1,
             )
 
             # Parse JSON from response

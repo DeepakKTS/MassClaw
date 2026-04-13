@@ -93,7 +93,8 @@ class TaskDecomposer:
                 response = await self.router.generate(
                     prompt=msg,
                     system=system,
-                    max_tokens=4096,
+                    model="claude-sonnet-4-20250514",  # Haiku is fast + cheap for structured decomposition
+                    max_tokens=1500,
                     temperature=0.3,  # Low temperature for structured output
                 )
 

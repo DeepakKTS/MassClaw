@@ -239,13 +239,20 @@ class WorkflowScheduler:
                 task_rec, agent, context = node_contexts[node.node_id]
                 system_prompt = AGENT_PROMPTS.get(node.capability, DEFAULT_AGENT_PROMPT)
                 user_prompt = self._build_agent_prompt(node, context)
-                model = None
+                # Cost optimization: use Haiku for simple tasks, Sonnet for complex/verification
                 if node.capability in ("verification", "quality-check", "consistency-audit"):
                     model = "claude-sonnet-4-20250514"
+                    max_tok = 1500
+                elif node.estimated_complexity == "high":
+                    model = "claude-sonnet-4-20250514"
+                    max_tok = 2000
+                else:
+                    model = "claude-sonnet-4-20250514"
+                    max_tok = 1200
                 try:
                     resp = await self.model_router.generate(
                         prompt=user_prompt, system=system_prompt,
-                        model=model, max_tokens=4096, temperature=0.5,
+                        model=model, max_tokens=max_tok, temperature=0.4,
                     )
                     return node, resp
                 except Exception as e:

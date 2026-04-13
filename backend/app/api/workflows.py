@@ -4,7 +4,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -26,26 +26,79 @@ from app.services.workflow_service import WorkflowService
 router = APIRouter()
 
 
+async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -> None:
+    """Background task that executes the workflow after creation."""
+    import asyncio
+    from app.core.logging import get_logger
+    logger = get_logger("workflow_bg")
+    try:
+        redis = get_redis_manager().get_cache_client()
+        async with db_session_context() as session:
+            from sqlalchemy import select
+            from app.models.workflow import Workflow as WfModel
+            result = await session.execute(select(WfModel).where(WfModel.workflow_id == workflow_id))
+            workflow = result.scalar_one()
+            service = WorkflowService(session, redis)
+            # Run the intelligence pipeline
+            from app.intelligence.goal_interpreter import GoalInterpreter
+            from app.intelligence.planner import AdaptivePlanner
+            from app.intelligence.strategy_router import StrategyRouter
+            goal = await GoalInterpreter().interpret(data.prompt)
+            plan = AdaptivePlanner().plan(goal, float(data.budget_limit))
+            router = StrategyRouter(session, redis)
+            await router.execute(plan, workflow)
+    except Exception as e:
+        logger.error("workflow_background_failed", workflow_id=workflow_id, error=str(e))
+        # Mark workflow as failed
+        try:
+            async with db_session_context() as session:
+                from sqlalchemy import select, update
+                from app.models.workflow import Workflow as WfModel
+                from app.models.base import WorkflowStatus
+                from datetime import datetime, timezone
+                await session.execute(
+                    update(WfModel).where(WfModel.workflow_id == workflow_id)
+                    .values(status=WorkflowStatus.FAILED, result={"error": str(e)},
+                            completed_at=datetime.now(timezone.utc))
+                )
+        except Exception:
+            pass
+
+
 @router.post("", response_model=WorkflowResponse, status_code=201)
 async def create_workflow(
     data: WorkflowCreate,
+    background_tasks: BackgroundTasks,
 ) -> WorkflowResponse:
-    """Create and execute a workflow.
+    """Create a workflow and start execution in the background.
 
-    This is the main entry point: the prompt is decomposed into a DAG,
-    agents are assigned, and tasks are executed with parallel scheduling,
-    shared memory, wallet tracking, and trust updates.
-
-    Uses its own DB session (not the request-scoped one) because workflow
-    execution involves many intermediate commits across the orchestration loop.
+    Returns immediately with the workflow in PENDING status.
+    Execution happens asynchronously — monitor via GET /workflows/{id}/status
+    or the SSE stream at GET /workflows/{id}/stream.
     """
+    import uuid as _uuid
     redis = get_redis_manager().get_cache_client()
     async with db_session_context() as session:
-        service = WorkflowService(session, redis)
-        workflow = await service.create_and_execute(data)
-        # Refresh to ensure all server-side defaults are loaded before leaving the session
+        from app.models.workflow import Workflow as WfModel
+        from app.models.base import WorkflowStatus
+        workflow = WfModel(
+            user_id=data.user_id,
+            prompt=data.prompt,
+            domain=data.domain,
+            status=WorkflowStatus.PENDING,
+            budget_limit=data.budget_limit,
+            priority=data.priority,
+            metadata_=data.metadata,
+        )
+        session.add(workflow)
+        await session.flush()
         await session.refresh(workflow)
-        return WorkflowResponse.model_validate(workflow)
+        wf_id = str(workflow.workflow_id)
+        response = WorkflowResponse.model_validate(workflow)
+
+    # Launch execution in background — returns immediately to client
+    background_tasks.add_task(_execute_workflow_background, wf_id, data)
+    return response
 
 
 @router.get("", response_model=PaginatedResponse[WorkflowResponse])

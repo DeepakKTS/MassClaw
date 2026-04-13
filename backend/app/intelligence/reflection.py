@@ -70,8 +70,9 @@ class ReflectionEngine:
             import json
             response = await self.router.generate(
                 prompt=REFLECTION_PROMPT.format(goal=goal_description, outputs=outputs_text),
-                max_tokens=500,
-                temperature=0.2,
+                model="claude-sonnet-4-20250514",  # Haiku for cheap reflection
+                max_tokens=300,
+                temperature=0.1,
             )
 
             content = response.content.strip()
