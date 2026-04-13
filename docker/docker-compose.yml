@@ -1,0 +1,122 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: massclaw-postgres
+    environment:
+      POSTGRES_USER: massclaw
+      POSTGRES_PASSWORD: massclaw
+      POSTGRES_DB: massclaw
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U massclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - massclaw-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: massclaw-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - massclaw-network
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: massclaw-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres:5432/massclaw
+      REDIS_URL: redis://redis:6379
+      CELERY_BROKER_URL: redis://redis:6379/3
+      CELERY_RESULT_BACKEND: redis://redis:6379/3
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - massclaw-network
+
+  celery-worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: massclaw-celery-worker
+    command: celery -A app.workers.celery_app worker -l info -Q health,trust,memory,workflow,audit
+    environment:
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres:5432/massclaw
+      REDIS_URL: redis://redis:6379
+      CELERY_BROKER_URL: redis://redis:6379/3
+      CELERY_RESULT_BACKEND: redis://redis:6379/3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - massclaw-network
+
+  celery-beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: massclaw-celery-beat
+    command: celery -A app.workers.celery_app beat -l info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres:5432/massclaw
+      REDIS_URL: redis://redis:6379
+      CELERY_BROKER_URL: redis://redis:6379/3
+      CELERY_RESULT_BACKEND: redis://redis:6379/3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - massclaw-network
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: massclaw-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - massclaw-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  massclaw-network:
+    driver: bridge

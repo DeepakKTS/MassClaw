@@ -1,0 +1,480 @@
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+import redis.asyncio as aioredis
+
+from app.config import get_settings
+from app.core.events import EventBus
+from app.core.logging import get_logger
+from app.exceptions import AgentUnavailableError, BudgetExhaustedError
+from app.llm.base import LLMResponse
+from app.llm.router import get_model_router
+from app.llm.token_counter import tokens_to_credits
+from app.models.agent import Agent
+from app.models.base import TaskStatus, WorkflowStatus
+from app.models.task import Task
+from app.models.workflow import Workflow
+from app.orchestration.dag import DAG, DAGNode
+from app.orchestration.selector import AgentSelector
+from app.orchestration.synthesizer import OutputSynthesizer
+from app.schemas.memory import MemoryWriteRequest
+from app.models.base import MemoryType
+from app.services.memory_service import MemoryService
+from app.services.trust_service import TrustService
+from app.services.wallet_service import WalletService
+from app.schemas.trust import TrustScoreInput
+
+logger = get_logger(__name__)
+
+# Agent system prompts by capability
+AGENT_PROMPTS: dict[str, str] = {
+    "intake": (
+        "You are an intake specialist. Parse the user's request and extract: "
+        "(1) the specific operational area, (2) key constraints, "
+        "(3) desired outcomes, (4) stakeholders involved. "
+        "Output structured, clear findings."
+    ),
+    "classify": (
+        "You are a classification specialist. Categorize the request into domain, "
+        "urgency, complexity, and required expertise areas."
+    ),
+    "extract-requirements": (
+        "You are a requirements extraction specialist. Identify all explicit and implicit "
+        "requirements from the request and list them clearly."
+    ),
+    "research": (
+        "You are a research specialist. Given the context, gather and synthesize "
+        "background information, industry benchmarks, best practices, and relevant data."
+    ),
+    "data-retrieval": (
+        "You are a data retrieval specialist. Find and compile relevant data points, "
+        "statistics, and metrics related to the topic."
+    ),
+    "literature-review": (
+        "You are a literature review specialist. Survey existing knowledge, studies, "
+        "and publications relevant to the topic and summarize key findings."
+    ),
+    "process-analysis": (
+        "You are a process analysis specialist. Analyze workflows, identify bottlenecks, "
+        "inefficiencies, and areas for improvement."
+    ),
+    "workflow-mapping": (
+        "You are a workflow mapping specialist. Map out the current process flow, "
+        "identify dependencies, and highlight critical paths."
+    ),
+    "bottleneck-detection": (
+        "You are a bottleneck detection specialist. Identify resource constraints, "
+        "throughput limits, and queue buildup points in the process."
+    ),
+    "risk-assessment": (
+        "You are a risk assessment specialist. Identify regulatory, safety, compliance, "
+        "operational, and financial risks. Rate each by severity and likelihood."
+    ),
+    "compliance-check": (
+        "You are a compliance specialist. Check for regulatory and legal compliance gaps "
+        "and recommend remediation actions."
+    ),
+    "safety-analysis": (
+        "You are a safety analysis specialist. Evaluate potential safety hazards and "
+        "recommend preventive measures."
+    ),
+    "optimization": (
+        "You are an optimization specialist. Propose concrete improvements for efficiency, "
+        "resource allocation, and scheduling based on the analysis."
+    ),
+    "scheduling": (
+        "You are a scheduling specialist. Design optimal schedules considering constraints, "
+        "demand patterns, and resource availability."
+    ),
+    "resource-allocation": (
+        "You are a resource allocation specialist. Determine optimal distribution of "
+        "personnel, equipment, and budget across operations."
+    ),
+    "cost-analysis": (
+        "You are a financial analysis specialist. Estimate costs, project ROI, "
+        "and evaluate budget implications of proposed changes."
+    ),
+    "budget-estimation": (
+        "You are a budget estimation specialist. Create detailed cost projections "
+        "for proposed initiatives."
+    ),
+    "roi-projection": (
+        "You are an ROI specialist. Calculate return on investment for proposed changes "
+        "with confidence intervals."
+    ),
+    "summarization": (
+        "You are a synthesis specialist. Integrate all findings into a clear, "
+        "actionable executive summary with key recommendations."
+    ),
+    "report-generation": (
+        "You are a report generation specialist. Create a comprehensive, well-structured "
+        "report from the collected findings."
+    ),
+    "executive-brief": (
+        "You are an executive briefing specialist. Create a concise, high-impact "
+        "brief for senior leadership."
+    ),
+    "verification": (
+        "You are a quality verification specialist. Cross-check all outputs for "
+        "logical consistency, factual accuracy, completeness, and potential contradictions. "
+        "Flag any issues found."
+    ),
+    "quality-check": (
+        "You are a quality assurance specialist. Review outputs for completeness, "
+        "accuracy, and adherence to requirements."
+    ),
+    "consistency-audit": (
+        "You are a consistency auditor. Check that all outputs are internally consistent "
+        "and that conclusions follow from the evidence."
+    ),
+    "data-analytics": (
+        "You are a data analytics specialist. Analyze datasets, compute statistics, "
+        "identify trends, and produce insights."
+    ),
+    "visualization": (
+        "You are a visualization specialist. Design effective data visualizations "
+        "and describe charts that communicate findings clearly."
+    ),
+}
+
+DEFAULT_AGENT_PROMPT = (
+    "You are a specialized AI agent. Complete the assigned task thoroughly and accurately. "
+    "Build on the provided context from prior agents. Be specific and actionable."
+)
+
+
+class WorkflowScheduler:
+    """The core orchestration engine.
+
+    Executes a workflow DAG with:
+    - Dependency-aware parallel execution via asyncio.gather
+    - Shared memory piping between agent steps
+    - Wallet budget tracking per task
+    - Trust score updates after each task
+    - Retry with fallback agent on failure
+    - Real-time progress events via Redis pub/sub
+    """
+
+    MAX_RETRIES = 2
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        redis: aioredis.Redis,
+    ) -> None:
+        self.session = session
+        self.redis = redis
+        self.selector = AgentSelector(session)
+        self.synthesizer = OutputSynthesizer()
+        self.memory_service = MemoryService(session, redis)
+        self.wallet_service = WalletService(session, redis)
+        self.trust_service = TrustService(session, redis)
+        self.model_router = get_model_router()
+
+    async def execute_workflow(
+        self,
+        workflow: Workflow,
+        dag: DAG,
+        agents: dict[str, Agent],
+    ) -> dict:
+        """Execute a complete workflow DAG.
+
+        This is the main orchestration loop:
+        1. While incomplete: find ready nodes, execute in parallel
+        2. Each task: build context -> LLM call -> write memory -> update trust
+        3. On failure: retry with fallback agent, then skip dependents
+        4. Finally: synthesize outputs into final result
+        """
+        workflow.status = WorkflowStatus.RUNNING
+        workflow.started_at = datetime.now(timezone.utc)
+        workflow.dag_snapshot = dag.to_dict()
+        await self.session.flush()
+
+        await self._publish_progress(workflow, dag, "workflow_started")
+
+        # Execution loop
+        while not dag.is_complete:
+            ready_nodes = dag.get_ready_nodes()
+            if not ready_nodes:
+                break
+
+            # Phase 1: Prepare all ready nodes (create Task records sequentially)
+            node_contexts: dict[str, tuple[Task, Agent, str]] = {}
+            for node in ready_nodes:
+                agent = agents.get(node.node_id)
+                if agent is None:
+                    dag.mark_failed(node.node_id, error="No agent assigned")
+                    continue
+                dag.mark_running(node.node_id)
+
+                task = Task(
+                    workflow_id=workflow.workflow_id,
+                    assigned_agent_id=agent.agent_id,
+                    step_number=int(node.node_id.replace("t", "")) if node.node_id.startswith("t") else 0,
+                    capability=node.capability,
+                    description=node.description,
+                    status=TaskStatus.RUNNING,
+                )
+                self.session.add(task)
+                await self.session.flush()
+                await self.session.refresh(task)
+                node.task_id = task.task_id
+
+                # Build context from shared memory (DB read)
+                context = await self._build_context(workflow, node, dag)
+                node_contexts[node.node_id] = (task, agent, context)
+
+                await self._publish_progress(workflow, dag, "task_started", node=node, agent=agent)
+
+            # Phase 2: Run LLM calls in parallel (no DB writes)
+            async def _llm_call(node: DAGNode) -> tuple[DAGNode, LLMResponse | Exception]:
+                task_rec, agent, context = node_contexts[node.node_id]
+                system_prompt = AGENT_PROMPTS.get(node.capability, DEFAULT_AGENT_PROMPT)
+                user_prompt = self._build_agent_prompt(node, context)
+                model = None
+                if node.capability in ("verification", "quality-check", "consistency-audit"):
+                    model = "claude-sonnet-4-20250514"
+                try:
+                    resp = await self.model_router.generate(
+                        prompt=user_prompt, system=system_prompt,
+                        model=model, max_tokens=4096, temperature=0.5,
+                    )
+                    return node, resp
+                except Exception as e:
+                    return node, e
+
+            active_nodes = [n for n in ready_nodes if n.node_id in node_contexts]
+            llm_results = await asyncio.gather(*[_llm_call(n) for n in active_nodes])
+
+            # Phase 3: Process results sequentially (DB writes)
+            for node, resp_or_err in llm_results:
+                task_rec, agent, context = node_contexts[node.node_id]
+                start_time = task_rec.created_at
+
+                if isinstance(resp_or_err, Exception):
+                    task_rec.status = TaskStatus.FAILED
+                    task_rec.error_message = str(resp_or_err)
+                    await self.session.flush()
+                    await self._handle_failure(workflow, dag, node, agents, resp_or_err)
+                    continue
+
+                response: LLMResponse = resp_or_err
+                now = datetime.now(timezone.utc)
+                latency_ms = response.latency_ms
+
+                try:
+                    # Reserve and charge wallet
+                    estimated_cost = self._estimate_node_cost(agent)
+                    reservation = await self.wallet_service.reserve_budget(
+                        workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
+                        estimated_cost=estimated_cost,
+                        reason=f"Task {node.node_id}: {node.capability}",
+                    )
+                    actual_credits = tokens_to_credits(response.cost)
+                    await self.wallet_service.charge(
+                        workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
+                        actual_cost=actual_credits,
+                        reservation_event_id=reservation.wallet_event_id,
+                        reason=f"Task {node.node_id} completed: {response.total_tokens} tokens",
+                    )
+
+                    # Write to shared memory
+                    await self.memory_service.write_memory(
+                        MemoryWriteRequest(
+                            workflow_id=workflow.workflow_id,
+                            source_agent_id=agent.agent_id,
+                            memory_type=MemoryType.RESULT,
+                            content=response.content,
+                            confidence=0.85,
+                            metadata={"task_id": str(task_rec.task_id), "capability": node.capability},
+                        )
+                    )
+
+                    # Update trust
+                    quality_score = min(1.0, len(response.content) / 500)
+                    latency_score = max(0, 1.0 - min(latency_ms / 30000, 1.0))
+                    cost_score = max(0, 1.0 - min(actual_credits / 50, 1.0))
+                    await self.trust_service.record_trust_event(
+                        agent_id=agent.agent_id,
+                        scores=TrustScoreInput(
+                            quality_score=quality_score, latency_score=latency_score,
+                            cost_score=cost_score,
+                            consistency_score=await self.trust_service.compute_consistency_score(agent.agent_id),
+                            reliability_score=await self.trust_service.compute_reliability_score(agent.agent_id),
+                        ),
+                        workflow_id=workflow.workflow_id, task_id=task_rec.task_id,
+                    )
+
+                    # Mark completed
+                    task_rec.status = TaskStatus.COMPLETED
+                    task_rec.output = {"content": response.content, "model": response.model}
+                    task_rec.confidence = quality_score
+                    task_rec.cost_used = Decimal(str(actual_credits))
+                    task_rec.latency_ms = latency_ms
+                    task_rec.completed_at = now
+                    await self.session.flush()
+
+                    dag.mark_completed(node.node_id, output=response.content)
+                    await self._publish_progress(
+                        workflow, dag, "task_completed", node=node, agent=agent,
+                        extra={"latency_ms": round(latency_ms, 1), "cost_credits": round(actual_credits, 4)},
+                    )
+                    logger.info(
+                        "task_completed", workflow_id=str(workflow.workflow_id),
+                        node_id=node.node_id, capability=node.capability, agent=agent.name,
+                        latency_ms=round(latency_ms, 1), tokens=response.total_tokens,
+                    )
+
+                except Exception as e:
+                    task_rec.status = TaskStatus.FAILED
+                    task_rec.error_message = str(e)
+                    await self.session.flush()
+                    await self._handle_failure(workflow, dag, node, agents, e)
+
+            # Persist DAG state
+            workflow.dag_snapshot = dag.to_dict()
+            await self.session.flush()
+
+            await self._publish_progress(workflow, dag, "step_batch_completed")
+
+        # Synthesize final output
+        try:
+            final_result = await self.synthesizer.synthesize(dag, workflow.prompt)
+        except Exception as e:
+            logger.error("synthesis_failed", error=str(e))
+            final_result = {
+                "content": "Synthesis failed. Individual task outputs are available in the DAG.",
+                "confidence": 0.0,
+                "summary": f"Synthesis error: {e}",
+            }
+
+        # Finalize workflow
+        workflow.status = (
+            WorkflowStatus.COMPLETED if dag.failed_count == 0 else WorkflowStatus.FAILED
+        )
+        if dag.completed_count > 0 and dag.failed_count > 0:
+            workflow.status = WorkflowStatus.COMPLETED  # Partial success still completes
+        workflow.completed_at = datetime.now(timezone.utc)
+        workflow.result = final_result
+        workflow.dag_snapshot = dag.to_dict()
+        await self.session.flush()
+
+        await self._publish_progress(workflow, dag, "workflow_completed")
+
+        logger.info(
+            "workflow_completed",
+            workflow_id=str(workflow.workflow_id),
+            completed=dag.completed_count,
+            failed=dag.failed_count,
+            total=len(dag.nodes),
+            budget_used=float(workflow.budget_used),
+        )
+
+        return final_result
+
+    async def _handle_failure(
+        self,
+        workflow: Workflow,
+        dag: DAG,
+        node: DAGNode,
+        agents: dict[str, Agent],
+        error: Exception,
+    ) -> None:
+        """Handle a failed node: mark failed and skip all dependents."""
+        logger.warning(
+            "task_failed",
+            node_id=node.node_id,
+            capability=node.capability,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+
+        skipped = dag.mark_failed(node.node_id, error=str(error))
+        if skipped:
+            logger.info("tasks_skipped_dependency", node_id=node.node_id, skipped=skipped)
+
+        await self._publish_progress(workflow, dag, "task_failed", node=node)
+
+    async def _build_context(self, workflow: Workflow, node: DAGNode, dag: DAG) -> str:
+        """Build context from shared memory for an agent task."""
+        from app.schemas.memory import MemoryQueryRequest
+
+        # Query memory for relevant context
+        results = await self.memory_service.query_memory(
+            MemoryQueryRequest(
+                query=f"{node.capability}: {node.description}",
+                workflow_id=workflow.workflow_id,
+                min_similarity=0.3,
+                top_k=10,
+            )
+        )
+
+        if not results:
+            return "No prior context available. This is the first task in the workflow."
+
+        context_parts = []
+        for r in results:
+            context_parts.append(
+                f"[{r.memory.memory_type} | similarity={r.similarity}]\n{r.memory.content}"
+            )
+
+        return "\n\n---\n\n".join(context_parts)
+
+    @staticmethod
+    def _build_agent_prompt(node: DAGNode, context: str) -> str:
+        """Build the user prompt for an agent, including task description and context."""
+        return (
+            f"## Task\n{node.description}\n\n"
+            f"## Context from Prior Agents\n{context}\n\n"
+            f"## Instructions\n"
+            f"Complete this task thoroughly. Build on the context provided by prior agents. "
+            f"Be specific, actionable, and thorough in your analysis."
+        )
+
+    @staticmethod
+    def _estimate_node_cost(agent: Agent) -> float:
+        """Estimate task cost in credits for budget reservation."""
+        avg_cost_usd = (agent.cost_profile or {}).get("avg_cost_per_call", 0.01)
+        return tokens_to_credits(Decimal(str(avg_cost_usd))) * 1.5  # 50% buffer
+
+    async def _publish_progress(
+        self,
+        workflow: Workflow,
+        dag: DAG,
+        event_type: str,
+        node: DAGNode | None = None,
+        agent: Agent | None = None,
+        extra: dict | None = None,
+    ) -> None:
+        """Publish real-time workflow progress event via Redis pub/sub."""
+        data = {
+            "workflow_id": str(workflow.workflow_id),
+            "event": event_type,
+            "progress_percent": dag.progress_percent,
+            "completed": dag.completed_count,
+            "failed": dag.failed_count,
+            "total": len(dag.nodes),
+        }
+        if node:
+            data["node_id"] = node.node_id
+            data["capability"] = node.capability
+            data["status"] = node.status.value
+        if agent:
+            data["agent_name"] = agent.name
+            data["agent_id"] = str(agent.agent_id)
+        if extra:
+            data.update(extra)
+
+        await EventBus.publish_dict(
+            ["workflow", str(workflow.workflow_id), "progress"],
+            f"workflow.{event_type}",
+            data,
+        )
