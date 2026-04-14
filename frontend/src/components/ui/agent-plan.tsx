@@ -275,6 +275,37 @@ export default function AgentPlan({
                                   ))}
                                 </div>
                               )}
+                              {output.reflection && (
+                                <div className="mt-2 rounded-lg bg-massclaw-accent/5 border border-massclaw-accent/20 p-3">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-[10px] font-semibold text-massclaw-accent uppercase tracking-widest">Reflection</span>
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                      output.reflection.action === "accept" ? "bg-massclaw-success/10 text-massclaw-success" :
+                                      output.reflection.action === "retry_task" ? "bg-massclaw-warning/10 text-massclaw-warning" :
+                                      "bg-massclaw-danger/10 text-massclaw-danger"
+                                    }`}>
+                                      {output.reflection.action}
+                                    </span>
+                                    <span className="text-[10px] text-massclaw-text-muted">
+                                      confidence: {(output.reflection.confidence * 100).toFixed(0)}%
+                                    </span>
+                                    {output.retry_count && output.retry_count > 0 && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-massclaw-warning/10 text-massclaw-warning">
+                                        retry #{output.retry_count}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {output.reflection.issues && output.reflection.issues.length > 0 && (
+                                    <div className="text-xs text-massclaw-text-muted mt-1">
+                                      {output.reflection.issues.map((issue: string, i: number) => (
+                                        <div key={i} className="flex items-start gap-1">
+                                          <span className="text-massclaw-warning">•</span> {issue}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               {task.error_message && <p className="text-xs text-red-400 mt-2 pl-1">{task.error_message}</p>}
                             </div>
                           </motion.div>

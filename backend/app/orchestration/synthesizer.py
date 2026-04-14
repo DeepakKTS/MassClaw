@@ -84,8 +84,25 @@ class OutputSynthesizer:
             temperature=0.5,
         )
 
-        # Confidence based on task completion rate
-        confidence = completed / total if total > 0 else 0.0
+        # Quality assessment — not just completion rate
+        if response.content:
+            content_length = len(response.content)
+            has_structure = any(marker in response.content for marker in ["##", "1.", "- ", "**"])
+            has_conclusion = any(
+                word in response.content.lower() for word in ["conclusion", "recommend", "summary", "overall"]
+            )
+
+            quality_score = completed / total if total > 0 else 0.0  # Base: completion rate
+            if content_length > 500:
+                quality_score = min(1.0, quality_score + 0.1)
+            if has_structure:
+                quality_score = min(1.0, quality_score + 0.1)
+            if has_conclusion:
+                quality_score = min(1.0, quality_score + 0.1)
+
+            confidence = round(quality_score, 3)
+        else:
+            confidence = completed / total if total > 0 else 0.0
 
         logger.info(
             "synthesis_complete",

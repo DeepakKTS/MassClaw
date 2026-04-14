@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo } from "react";
 import {
-  Crosshair, Bot, Brain, Shield, Trophy, FileText, Settings, FolderKanban, Wrench, Zap, UserCheck,
+  Crosshair, Bot, Brain, Shield, Trophy, FileText, Settings, FolderKanban, Wrench, Zap, UserCheck, Sparkles,
 } from "lucide-react";
 import { LimelightNav } from "@/components/ui/limelight-nav";
 
@@ -19,6 +19,7 @@ const DOCK_ITEMS = [
   { id: "tools", href: "/tools", icon: <Wrench />, label: "Tools" },
   { id: "mcp", href: "/mcp", icon: <Zap />, label: "MCP" },
   { id: "approvals", href: "/approvals", icon: <UserCheck />, label: "Approvals" },
+  { id: "intelligence", href: "/intelligence", icon: <Sparkles />, label: "Intelligence" },
 ];
 
 export function BottomDock() {

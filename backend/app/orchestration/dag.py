@@ -168,6 +168,21 @@ class DAG:
         """Mark a node as currently running."""
         self.get_node(node_id).status = TaskStatus.RUNNING
 
+    def mark_pending(self, node_id: str) -> None:
+        """Reset a node back to pending (for retry)."""
+        node = self.get_node(node_id)
+        node.status = TaskStatus.PENDING
+        node.output = None
+
+    def add_node(self, node: DAGNode) -> None:
+        """Add a new node to the DAG (for dynamic replanning)."""
+        if node.node_id in self._nodes:
+            raise ValueError(f"Node '{node.node_id}' already exists")
+        self._nodes[node.node_id] = node
+        for dep in node.depends_on:
+            self._adjacency[dep].append(node.node_id)
+            self._reverse[node.node_id].append(dep)
+
     def get_node(self, node_id: str) -> DAGNode:
         """Get a node by ID."""
         if node_id not in self._nodes:

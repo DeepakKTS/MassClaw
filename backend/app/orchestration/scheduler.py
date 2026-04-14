@@ -608,6 +608,45 @@ class WorkflowScheduler:
                         except Exception as e:
                             logger.warning("review_request_failed", error=str(e))
 
+                    # Adaptive Intelligence: Reflect on task output quality
+                    try:
+                        from app.intelligence.reflection import ReflectionEngine
+
+                        reflection_engine = ReflectionEngine()
+                        task_outputs = [{"capability": node.capability, "content": response.content[:2000]}]
+                        reflection = await reflection_engine.reflect(
+                            goal_description=workflow.prompt,
+                            completed_outputs=task_outputs,
+                        )
+
+                        # Store reflection in task metadata
+                        task_rec.output["reflection"] = {
+                            "action": reflection.action,
+                            "confidence": reflection.confidence,
+                            "issues": reflection.issues[:3] if reflection.issues else [],
+                            "suggestions": reflection.suggestions[:3] if reflection.suggestions else [],
+                        }
+
+                        # If reflection suggests retry and we have budget, mark for retry
+                        if reflection.action == "retry_task" and reflection.confidence < 0.5:
+                            retry_count = task_rec.output.get("retry_count", 0)
+                            if retry_count < 2:  # Max 2 retries per task
+                                task_rec.output["retry_count"] = retry_count + 1
+                                task_rec.status = TaskStatus.PENDING
+                                dag.mark_pending(node.node_id)  # Reset DAG node
+                                logger.info(
+                                    "task_retry_triggered",
+                                    node_id=node.node_id,
+                                    confidence=reflection.confidence,
+                                    retry=retry_count + 1,
+                                )
+                                await self.session.flush()
+                                continue  # Skip to next node, this one will re-execute
+
+                        await self.session.flush()
+                    except Exception as e:
+                        logger.warning("reflection_failed", node_id=node.node_id, error=str(e))
+
                     await self._publish_progress(
                         workflow,
                         dag,
