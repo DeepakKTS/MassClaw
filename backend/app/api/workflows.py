@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -26,43 +27,57 @@ from app.services.workflow_service import WorkflowService
 router = APIRouter()
 
 
+MAX_WORKFLOW_TIMEOUT_SECONDS = 600  # 10 minutes max per workflow
+
+
 async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -> None:
-    """Background task that executes the workflow after creation."""
+    """Background task that executes the workflow with a hard timeout."""
     import asyncio
     from app.core.logging import get_logger
     logger = get_logger("workflow_bg")
-    try:
+
+    async def _run() -> None:
         redis = get_redis_manager().get_cache_client()
         async with db_session_context() as session:
             from sqlalchemy import select
             from app.models.workflow import Workflow as WfModel
             result = await session.execute(select(WfModel).where(WfModel.workflow_id == workflow_id))
             workflow = result.scalar_one()
-            service = WorkflowService(session, redis)
-            # Run the intelligence pipeline
             from app.intelligence.goal_interpreter import GoalInterpreter
             from app.intelligence.planner import AdaptivePlanner
             from app.intelligence.strategy_router import StrategyRouter
             goal = await GoalInterpreter().interpret(data.prompt)
             plan = AdaptivePlanner().plan(goal, float(data.budget_limit))
-            router = StrategyRouter(session, redis)
-            await router.execute(plan, workflow)
+            strategy_router = StrategyRouter(session, redis)
+            await strategy_router.execute(plan, workflow)
+
+    try:
+        await asyncio.wait_for(_run(), timeout=MAX_WORKFLOW_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error("workflow_timeout", workflow_id=workflow_id, timeout=MAX_WORKFLOW_TIMEOUT_SECONDS)
+        await _mark_workflow_failed(workflow_id, f"Workflow timed out after {MAX_WORKFLOW_TIMEOUT_SECONDS}s")
     except Exception as e:
-        logger.error("workflow_background_failed", workflow_id=workflow_id, error=str(e))
-        # Mark workflow as failed
-        try:
-            async with db_session_context() as session:
-                from sqlalchemy import select, update
-                from app.models.workflow import Workflow as WfModel
-                from app.models.base import WorkflowStatus
-                from datetime import datetime, timezone
-                await session.execute(
-                    update(WfModel).where(WfModel.workflow_id == workflow_id)
-                    .values(status=WorkflowStatus.FAILED, result={"error": str(e)},
-                            completed_at=datetime.now(timezone.utc))
-                )
-        except Exception:
-            pass
+        logger.error("workflow_background_failed", workflow_id=workflow_id, error=str(e), error_type=type(e).__name__)
+        await _mark_workflow_failed(workflow_id, str(e))
+
+
+async def _mark_workflow_failed(workflow_id: str, error_message: str) -> None:
+    """Mark a workflow as failed. Separate function for reuse."""
+    from app.core.logging import get_logger
+    logger = get_logger("workflow_bg")
+    try:
+        async with db_session_context() as session:
+            from sqlalchemy import update
+            from app.models.workflow import Workflow as WfModel
+            from app.models.base import WorkflowStatus
+            from datetime import datetime, timezone
+            await session.execute(
+                update(WfModel).where(WfModel.workflow_id == workflow_id)
+                .values(status=WorkflowStatus.FAILED, result={"error": error_message},
+                        completed_at=datetime.now(timezone.utc))
+            )
+    except Exception as inner_err:
+        logger.error("workflow_failure_marking_failed", workflow_id=workflow_id, error=str(inner_err))
 
 
 @router.post("", response_model=WorkflowResponse, status_code=201)
@@ -99,6 +114,97 @@ async def create_workflow(
     # Launch execution in background — returns immediately to client
     background_tasks.add_task(_execute_workflow_background, wf_id, data)
     return response
+
+
+class EstimateBudgetRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=50000)
+
+
+@router.post("/estimate-budget")
+async def estimate_budget(data: EstimateBudgetRequest) -> dict:
+    """Estimate the budget needed for a given prompt based on complexity analysis.
+
+    Analyzes prompt length, keyword density, and implied task count
+    to suggest an appropriate budget range.
+    """
+    prompt = data.prompt
+    if not prompt.strip():
+        return {"estimated_budget": 100, "estimated_ops": 2, "complexity": "simple", "confidence": 0.5}
+
+    words = prompt.split()
+    word_count = len(words)
+
+    # Complexity signals
+    complex_keywords = {
+        "analyze", "research", "investigate", "compare", "evaluate",
+        "comprehensive", "detailed", "thorough", "multi-step", "cross-reference",
+        "risk", "compliance", "audit", "security", "optimization", "forecast",
+        "strategy", "architecture", "design", "implement", "validate",
+    }
+    action_keywords = {
+        "identify", "propose", "generate", "create", "build", "plan",
+        "assess", "review", "check", "verify", "map", "extract",
+        "summarize", "report", "brief", "schedule", "allocate", "estimate",
+    }
+
+    prompt_lower = prompt.lower()
+    complex_count = sum(1 for kw in complex_keywords if kw in prompt_lower)
+    action_count = sum(1 for kw in action_keywords if kw in prompt_lower)
+
+    # Estimate ops based on signals
+    if word_count < 10 and complex_count == 0:
+        estimated_ops = 3
+        complexity = "simple"
+    elif word_count < 25 or (complex_count <= 1 and action_count <= 2):
+        estimated_ops = 5
+        complexity = "moderate"
+    elif word_count < 50 or (complex_count <= 3 and action_count <= 4):
+        estimated_ops = 7
+        complexity = "complex"
+    else:
+        estimated_ops = max(8, min(12, action_count + complex_count + 2))
+        complexity = "comprehensive"
+
+    # Each op costs ~15-40 credits on average (varies by model/complexity)
+    avg_cost_per_op = 25 if complexity in ("complex", "comprehensive") else 18
+    estimated_budget = estimated_ops * avg_cost_per_op
+
+    # Round to nearest 50
+    estimated_budget = max(50, round(estimated_budget / 50) * 50)
+
+    return {
+        "estimated_budget": estimated_budget,
+        "estimated_ops": estimated_ops,
+        "complexity": complexity,
+        "confidence": min(0.9, 0.5 + complex_count * 0.05 + action_count * 0.05),
+    }
+
+
+@router.post("/cleanup-stale")
+async def cleanup_stale_workflows() -> dict:
+    """Find and fail any workflows stuck in pending/running for > 10 minutes."""
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import update
+    from app.models.workflow import Workflow as WfModel
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    async with db_session_context() as session:
+        result = await session.execute(
+            update(WfModel)
+            .where(
+                WfModel.status.in_(["pending", "decomposing", "running"]),
+                WfModel.created_at < cutoff,
+            )
+            .values(
+                status=WorkflowStatus.FAILED,
+                result={"error": "Workflow timed out (stale cleanup)"},
+                completed_at=datetime.now(timezone.utc),
+            )
+            .returning(WfModel.workflow_id)
+        )
+        cleaned_ids = [str(row[0]) for row in result.fetchall()]
+
+    return {"cleaned": len(cleaned_ids), "workflow_ids": cleaned_ids}
 
 
 @router.get("", response_model=PaginatedResponse[WorkflowResponse])

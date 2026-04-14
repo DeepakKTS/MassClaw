@@ -8,6 +8,7 @@ export interface Workflow {
   budget_used: number;
   priority: number;
   metadata: Record<string, unknown>;
+  execution_mode: string | null;
   dag_snapshot: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
   started_at: string | null;

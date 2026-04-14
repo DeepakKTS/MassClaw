@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { api } from "@/lib/api";
-import { Brain, Search } from "lucide-react";
+import { Brain, Search, Loader2 } from "lucide-react";
 
 export default function MemoryPage() {
   const [query, setQuery] = useState("");
@@ -28,10 +28,10 @@ export default function MemoryPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6 py-6">
       <div>
-        <h1 className="text-2xl font-bold">Memory Explorer</h1>
-        <p className="text-massclaw-text-muted mt-1">Semantic search across agent shared memory</p>
+        <h1 className="text-heading">Memory Explorer</h1>
+        <p className="text-massclaw-text-muted mt-1 text-sm">Semantic search across agent shared memory</p>
       </div>
 
       <form onSubmit={handleSearch} className="flex gap-3">
@@ -41,34 +41,34 @@ export default function MemoryPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search memories semantically..."
-            className="w-full bg-massclaw-surface border border-massclaw-border rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-massclaw-accent"
+            className="w-full glass rounded-xl pl-10 pr-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-massclaw-accent/50 border-none"
           />
         </div>
         <button
           type="submit"
           disabled={searching}
-          className="px-4 py-2 bg-massclaw-accent text-white rounded-lg text-sm hover:bg-massclaw-accent-light transition disabled:opacity-50"
+          className="px-5 py-2 bg-massclaw-accent hover:bg-massclaw-accent-light text-white rounded-xl text-sm font-medium transition disabled:opacity-50"
         >
-          {searching ? "Searching..." : "Search"}
+          {searching ? <Loader2 size={16} className="animate-spin" /> : "Search"}
         </button>
       </form>
 
       <div className="space-y-3">
         {results.map((r, i) => (
-          <div key={i} className="bg-massclaw-surface border border-massclaw-border rounded-lg p-4">
+          <div key={i} className="glass rounded-xl p-4">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs px-2 py-0.5 rounded bg-massclaw-border text-massclaw-text-muted">
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 uppercase tracking-wider">
                 {r.memory?.memory_type}
               </span>
-              <div className="text-xs text-massclaw-text-muted">
-                Similarity: {(r.similarity * 100).toFixed(1)}% &middot; Relevance: {(r.relevance_score * 100).toFixed(1)}%
+              <div className="text-[11px] text-massclaw-text-muted font-mono">
+                {(r.similarity * 100).toFixed(1)}% match &middot; {(r.relevance_score * 100).toFixed(1)}% relevant
               </div>
             </div>
-            <p className="text-sm whitespace-pre-wrap">{r.memory?.content}</p>
+            <p className="text-sm whitespace-pre-wrap leading-relaxed">{r.memory?.content}</p>
           </div>
         ))}
         {results.length === 0 && query && !searching && (
-          <p className="text-massclaw-text-muted text-center py-8">No results found</p>
+          <p className="text-massclaw-text-muted text-center py-12 text-sm">No results found</p>
         )}
       </div>
     </div>

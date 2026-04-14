@@ -186,15 +186,16 @@ class WalletService:
             agent_id=agent_id,
             action_type=WalletActionType.RELEASE,
             credit_delta=Decimal(str(reserved_amount)),
-            balance_after=Decimal("0"),  # Will be recomputed
+            balance_after=Decimal("0"),  # Updated below
             reason=f"Release reservation {reservation_event_id}",
             metadata_={"reservation_event_id": str(reservation_event_id)},
         )
         self.session.add(release_event)
+        await self.session.flush()  # Flush release before computing balance
 
-        # Charge the actual cost
+        # Charge the actual cost — compute from all events (including credits)
         budget_used = await self._compute_balance_from_events(workflow_id)
-        new_balance = budget_used + actual_cost  # Net after release + charge
+        new_balance = budget_used + actual_cost
 
         charge_event = WalletEvent(
             workflow_id=workflow_id,
@@ -212,7 +213,7 @@ class WalletService:
         )
         self.session.add(charge_event)
 
-        # Update workflow budget_used
+        # Update workflow budget_used and sync ORM object
         await self.session.execute(
             update(Workflow)
             .where(Workflow.workflow_id == workflow_id)
@@ -221,6 +222,11 @@ class WalletService:
 
         await self.session.flush()
         await self.session.refresh(charge_event)
+
+        # Expire the workflow ORM object so next access re-reads from DB
+        workflow_obj = await self.session.get(Workflow, workflow_id)
+        if workflow_obj:
+            await self.session.refresh(workflow_obj)
 
         # Invalidate cache
         await self._invalidate_cache(workflow_id)
@@ -369,8 +375,8 @@ class WalletService:
     async def _compute_balance_from_events(self, workflow_id: uuid.UUID) -> float:
         """Compute total spent from event ledger.
 
-        Sum of all DEBIT events (negative deltas, so we negate).
-        Credits and releases are positive deltas that reduce the "used" amount.
+        budget_used = abs(sum of DEBIT deltas) - sum of CREDIT deltas.
+        DEBIT deltas are negative, CREDIT deltas are positive.
         """
         result = await self.session.execute(
             select(
@@ -380,11 +386,18 @@ class WalletService:
                     ),
                     0,
                 ).label("total_debits"),
+                func.coalesce(
+                    func.sum(WalletEvent.credit_delta).filter(
+                        WalletEvent.action_type == WalletActionType.CREDIT
+                    ),
+                    0,
+                ).label("total_credits"),
             ).where(WalletEvent.workflow_id == workflow_id)
         )
         row = result.one()
-        # Debits are stored as negative, so negate to get positive "used" amount
-        return abs(float(row.total_debits))
+        # Debits are negative, credits are positive
+        # budget_used = |debits| - credits
+        return max(0.0, abs(float(row.total_debits)) - float(row.total_credits))
 
     async def _compute_reserved(self, workflow_id: uuid.UUID) -> float:
         """Compute outstanding reserved amount (reserves that haven't been released/charged).

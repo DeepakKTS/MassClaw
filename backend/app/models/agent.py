@@ -44,7 +44,7 @@ class Agent(Base, AuditMixin):
         index=True,
     )
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    capabilities: Mapped[dict] = mapped_column(
+    capabilities: Mapped[list] = mapped_column(
         JSONB,
         nullable=False,
         server_default=text("'[]'::jsonb"),

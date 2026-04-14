@@ -29,7 +29,7 @@ export default function PlanningPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Project Planning</h1>
+          <h1 className="text-heading">Project Planning</h1>
           <p className="text-massclaw-text-muted mt-1">Manage projects, backlogs, and sprints</p>
         </div>
         <Button onClick={() => setShowCreate(true)}>

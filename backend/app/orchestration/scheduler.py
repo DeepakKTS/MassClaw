@@ -206,19 +206,50 @@ class WorkflowScheduler:
             if not ready_nodes:
                 break
 
-            # Phase 1: Prepare all ready nodes (create Task records sequentially)
+            # Phase 1: Prepare all ready nodes — create Task records, reserve budget, build context
             node_contexts: dict[str, tuple[Task, Agent, str]] = {}
+            reservations: dict[str, any] = {}  # node_id -> wallet reservation event
             for node in ready_nodes:
                 agent = agents.get(node.node_id)
                 if agent is None:
                     dag.mark_failed(node.node_id, error="No agent assigned")
                     continue
+
+                # Pre-execution budget check — fail fast before wasting LLM calls
+                estimated_cost = self._estimate_node_cost(agent)
+                try:
+                    reservation = await self.wallet_service.reserve_budget(
+                        workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
+                        estimated_cost=estimated_cost,
+                        reason=f"Task {node.node_id}: {node.capability}",
+                    )
+                    reservations[node.node_id] = reservation
+                except BudgetExhaustedError:
+                    dag.mark_failed(
+                        node.node_id,
+                        error=f"Budget insufficient for {node.capability}: need ~{estimated_cost:.1f} cr",
+                    )
+                    # Create a task record so the UI shows it as failed
+                    failed_task = Task(
+                        workflow_id=workflow.workflow_id,
+                        assigned_agent_id=agent.agent_id,
+                        step_number=int("".join(c for c in node.node_id if c.isdigit()) or "0"),
+                        capability=node.capability,
+                        description=node.description,
+                        status=TaskStatus.FAILED,
+                        error_message=f"Budget insufficient: need ~{estimated_cost:.1f} cr",
+                    )
+                    self.session.add(failed_task)
+                    await self.session.flush()
+                    logger.warning("task_budget_insufficient", node_id=node.node_id, capability=node.capability, estimated_cost=estimated_cost)
+                    continue
+
                 dag.mark_running(node.node_id)
 
                 task = Task(
                     workflow_id=workflow.workflow_id,
                     assigned_agent_id=agent.agent_id,
-                    step_number=int(node.node_id.replace("t", "")) if node.node_id.startswith("t") else 0,
+                    step_number=int("".join(c for c in node.node_id if c.isdigit()) or "0"),
                     capability=node.capability,
                     description=node.description,
                     status=TaskStatus.RUNNING,
@@ -234,12 +265,11 @@ class WorkflowScheduler:
 
                 await self._publish_progress(workflow, dag, "task_started", node=node, agent=agent)
 
-            # Phase 2: Run LLM calls in parallel (no DB writes)
+            # Phase 2: Run LLM calls in parallel (budget already reserved)
             async def _llm_call(node: DAGNode) -> tuple[DAGNode, LLMResponse | Exception]:
                 task_rec, agent, context = node_contexts[node.node_id]
                 system_prompt = AGENT_PROMPTS.get(node.capability, DEFAULT_AGENT_PROMPT)
                 user_prompt = self._build_agent_prompt(node, context)
-                # Cost optimization: use Haiku for simple tasks, Sonnet for complex/verification
                 if node.capability in ("verification", "quality-check", "consistency-audit"):
                     model = "claude-sonnet-4-20250514"
                     max_tok = 1500
@@ -261,7 +291,7 @@ class WorkflowScheduler:
             active_nodes = [n for n in ready_nodes if n.node_id in node_contexts]
             llm_results = await asyncio.gather(*[_llm_call(n) for n in active_nodes])
 
-            # Phase 3: Process results sequentially (DB writes)
+            # Phase 3: Process results — charge actual cost (reservation already done)
             for node, resp_or_err in llm_results:
                 task_rec, agent, context = node_contexts[node.node_id]
                 start_time = task_rec.created_at
@@ -270,6 +300,16 @@ class WorkflowScheduler:
                     task_rec.status = TaskStatus.FAILED
                     task_rec.error_message = str(resp_or_err)
                     await self.session.flush()
+                    # Release the reservation since the LLM call failed
+                    if node.node_id in reservations:
+                        try:
+                            await self.wallet_service.release_reservation(
+                                workflow_id=workflow.workflow_id,
+                                reservation_event_id=reservations[node.node_id].wallet_event_id,
+                                reason=f"Task {node.node_id} failed: LLM error",
+                            )
+                        except Exception:
+                            pass  # best-effort release
                     await self._handle_failure(workflow, dag, node, agents, resp_or_err)
                     continue
 
@@ -278,20 +318,16 @@ class WorkflowScheduler:
                 latency_ms = response.latency_ms
 
                 try:
-                    # Reserve and charge wallet
-                    estimated_cost = self._estimate_node_cost(agent)
-                    reservation = await self.wallet_service.reserve_budget(
-                        workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
-                        estimated_cost=estimated_cost,
-                        reason=f"Task {node.node_id}: {node.capability}",
-                    )
+                    # Charge actual cost against the reservation
                     actual_credits = tokens_to_credits(response.cost)
-                    await self.wallet_service.charge(
-                        workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
-                        actual_cost=actual_credits,
-                        reservation_event_id=reservation.wallet_event_id,
-                        reason=f"Task {node.node_id} completed: {response.total_tokens} tokens",
-                    )
+                    reservation = reservations.get(node.node_id)
+                    if reservation:
+                        await self.wallet_service.charge(
+                            workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
+                            actual_cost=actual_credits,
+                            reservation_event_id=reservation.wallet_event_id,
+                            reason=f"Task {node.node_id} completed: {response.total_tokens} tokens",
+                        )
 
                     # Write to shared memory
                     await self.memory_service.write_memory(

@@ -89,17 +89,17 @@ class Workflow(Base, AuditMixin):
     # Relationships
     tasks: Mapped[list[Task]] = relationship(
         back_populates="workflow",
-        lazy="selectin",
+        lazy="select",
         cascade="all, delete-orphan",
     )
     memory_records: Mapped[list[MemoryRecord]] = relationship(
         back_populates="workflow",
-        lazy="selectin",
+        lazy="select",
         cascade="all, delete-orphan",
     )
     wallet_events: Mapped[list[WalletEvent]] = relationship(
         back_populates="workflow",
-        lazy="selectin",
+        lazy="select",
         cascade="all, delete-orphan",
     )
 

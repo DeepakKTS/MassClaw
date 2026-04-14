@@ -30,7 +30,7 @@ export default function AgentDetailPage() {
           <Bot size={28} className="text-massclaw-accent" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold">{agent.name}</h1>
+          <h1 className="text-heading">{agent.name}</h1>
           <p className="text-massclaw-text-muted text-sm">v{agent.version} · Safety Level {agent.safety_level}</p>
         </div>
         <span className={`ml-auto text-sm font-medium px-3 py-1 rounded-full border ${getStatusColor(agent.status)} border-current/20`}>

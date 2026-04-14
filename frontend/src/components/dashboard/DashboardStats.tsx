@@ -48,7 +48,7 @@ export function DashboardStats() {
       />
       <StatCard
         icon={GitBranch}
-        label="Workflows"
+        label="Missions"
         value={workflows?.total ?? 0}
         subtitle="total executed"
         color="bg-emerald-500/10 text-emerald-400"

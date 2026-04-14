@@ -66,6 +66,12 @@ class StrategyRouter:
             temperature=0.7,
         )
 
+        # Track budget for direct responses
+        from app.llm.token_counter import tokens_to_credits
+        from decimal import Decimal
+        actual_cost = tokens_to_credits(response.cost)
+        workflow.budget_used = Decimal(str(actual_cost))
+
         result = {
             "content": response.content,
             "confidence": 0.85,
@@ -116,9 +122,10 @@ class StrategyRouter:
         workflow.dag_snapshot = dag.to_dict()
         await self.session.flush()
 
-        # Assign agents
+        # Assign agents — use remaining budget, not total
         selector = AgentSelector(self.session)
-        agents = await selector.select_agents_for_dag(dag, float(workflow.budget_limit))
+        budget_remaining = float(workflow.budget_limit) - float(workflow.budget_used)
+        agents = await selector.select_agents_for_dag(dag, max(budget_remaining, 0.0))
 
         # Execute
         scheduler = WorkflowScheduler(self.session, self.redis)
@@ -132,16 +139,25 @@ class StrategyRouter:
         workflow.started_at = datetime.now(timezone.utc)
         await self.session.flush()
 
+        from app.llm.token_counter import tokens_to_credits
+        from decimal import Decimal
+
         outputs: list[dict[str, str]] = []
         iteration = 0
         reflection_count = 0
         total_tokens = 0
+        total_cost = 0.0
+        start_time = datetime.now(timezone.utc)
+
+        # Keep only last 3 iterations in context to avoid unbounded growth
+        MAX_CONTEXT_ITERATIONS = 3
 
         while iteration < plan.max_iterations:
             iteration += 1
 
-            # Generate response
-            context = "\n\n".join(o.get("content", "") for o in outputs) if outputs else "No prior context."
+            # Build context from recent outputs only (bounded)
+            recent = outputs[-MAX_CONTEXT_ITERATIONS:] if outputs else []
+            context = "\n\n".join(o.get("content", "") for o in recent) if recent else "No prior context."
             prompt = (
                 f"## Task (iteration {iteration})\n{plan.goal.original_prompt}\n\n"
                 f"## Prior Context\n{context}\n\n"
@@ -150,24 +166,28 @@ class StrategyRouter:
 
             response = await self.router.generate(prompt=prompt, max_tokens=4096, temperature=0.5)
             total_tokens += response.total_tokens
+            total_cost += tokens_to_credits(response.cost)
             outputs.append({"capability": f"iteration_{iteration}", "content": response.content})
 
             # Reflect
-            reflection = await self.reflection.reflect(plan.goal.original_prompt, outputs)
+            reflection = await self.reflection.reflect(plan.goal.original_prompt, outputs[-MAX_CONTEXT_ITERATIONS:])
             reflection_count += 1
 
             if reflection.action == "accept" or reflection.confidence >= plan.confidence_threshold:
                 break
 
-            # Check guardrails
+            # Check guardrails with real budget and elapsed time
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             should_stop, reason = self.guardrails.should_force_stop(
-                iteration, reflection_count, 0, float(workflow.budget_limit), 0
+                iteration, reflection_count, total_cost, float(workflow.budget_limit), elapsed
             )
             if should_stop:
                 logger.warning("iterative_force_stopped", reason=reason)
                 break
 
-        # Compose final result
+        # Track budget
+        workflow.budget_used = Decimal(str(total_cost))
+
         final_content = outputs[-1]["content"] if outputs else "No output produced."
         result = {
             "content": final_content,
@@ -198,6 +218,8 @@ class StrategyRouter:
         if reflection.action == "accept" and reflection.confidence >= plan.confidence_threshold:
             dag_result["execution_mode"] = "verify_and_refine"
             dag_result["verification"] = {"status": "accepted", "confidence": reflection.confidence}
+            workflow.result = dag_result
+            await self.session.flush()
             return dag_result
 
         # Otherwise add verification note
@@ -208,6 +230,8 @@ class StrategyRouter:
             "issues": reflection.issues,
             "suggestions": reflection.suggestions,
         }
+        workflow.result = dag_result
+        await self.session.flush()
         return dag_result
 
     async def _explore_and_prune(self, plan: ExecutionPlan, workflow: Workflow) -> dict:

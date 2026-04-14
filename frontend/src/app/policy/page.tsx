@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Settings, Plus } from "lucide-react";
+import { ShieldCheck, ShieldAlert, ShieldOff } from "lucide-react";
 
 export default function PolicyPage() {
   const { data, isLoading } = useQuery({
@@ -12,42 +12,48 @@ export default function PolicyPage() {
 
   const rules = data?.items || data || [];
 
+  const actionIcon = (action: string) => {
+    if (action === "deny") return <ShieldOff size={16} className="text-red-400" />;
+    if (action === "flag") return <ShieldAlert size={16} className="text-amber-400" />;
+    return <ShieldCheck size={16} className="text-emerald-400" />;
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Policy Rules</h1>
-          <p className="text-massclaw-text-muted mt-1">Safety and governance rule management</p>
-        </div>
+    <div className="max-w-4xl mx-auto space-y-6 py-6">
+      <div>
+        <h1 className="text-heading">Policy Rules</h1>
+        <p className="text-massclaw-text-muted mt-1 text-sm">Safety and governance rule management</p>
       </div>
 
       <div className="space-y-3">
         {isLoading ? (
-          <div className="text-massclaw-text-muted">Loading...</div>
+          <div className="text-massclaw-text-muted text-sm">Loading...</div>
         ) : Array.isArray(rules) && rules.length > 0 ? (
           rules.map((rule: any) => (
-            <div key={rule.rule_id} className="bg-massclaw-surface border border-massclaw-border rounded-lg p-4">
+            <div key={rule.rule_id} className="glass rounded-xl p-4 hover:bg-white/[0.03] transition-all">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <Settings size={16} className="text-massclaw-accent" />
+                  {actionIcon(rule.action)}
                   <div>
-                    <h3 className="font-medium">{rule.name}</h3>
-                    <p className="text-xs text-massclaw-text-muted">{rule.description}</p>
+                    <h3 className="font-medium text-sm">{rule.name}</h3>
+                    <p className="text-xs text-massclaw-text-muted mt-0.5">{rule.description}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className={`text-xs px-2 py-0.5 rounded ${rule.action === "deny" ? "bg-red-500/10 text-red-400" : rule.action === "flag" ? "bg-amber-500/10 text-amber-400" : "bg-green-500/10 text-green-400"}`}>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold ${
+                    rule.action === "deny" ? "bg-red-500/10 text-red-400" :
+                    rule.action === "flag" ? "bg-amber-500/10 text-amber-400" :
+                    "bg-emerald-500/10 text-emerald-400"
+                  }`}>
                     {rule.action}
                   </span>
-                  <span className={`text-xs ${rule.enabled ? "text-massclaw-success" : "text-massclaw-text-muted"}`}>
-                    {rule.enabled ? "Active" : "Disabled"}
-                  </span>
+                  <div className={`w-2 h-2 rounded-full ${rule.enabled ? "bg-emerald-400" : "bg-massclaw-text-muted/30"}`} />
                 </div>
               </div>
             </div>
           ))
         ) : (
-          <p className="text-massclaw-text-muted text-center py-8">No policy rules configured</p>
+          <p className="text-massclaw-text-muted text-center py-12 text-sm">No policy rules configured</p>
         )}
       </div>
     </div>

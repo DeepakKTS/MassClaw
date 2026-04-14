@@ -2,21 +2,150 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --bg: #0a0a0f;
-  --surface: #12121a;
-  --border: #1e1e2e;
-  --accent: #6366f1;
+/* ── Theme: Dark Mode — Apple-inspired pure blacks ── */
+:root, .dark {
+  --mc-bg: #0C0C0E;
+  --mc-surface: #161618;
+  --mc-border: #252528;
+  --mc-accent: #E08A3E;
+  --mc-accent-light: #F0A85C;
+  --mc-blue: #4A8EC2;
+  --mc-blue-light: #7AB3D9;
+  --mc-success: #30D158;
+  --mc-warning: #FFD60A;
+  --mc-danger: #FF453A;
+  --mc-text: #F5F5F7;
+  --mc-text-muted: #86868B;
+  color-scheme: dark;
+}
+
+/* ── Theme: Light Mode — Apple-inspired clean whites ── */
+.light {
+  --mc-bg: #FFFFFF;
+  --mc-surface: #F5F5F7;
+  --mc-border: #D2D2D7;
+  --mc-accent: #A66428;
+  --mc-accent-light: #E08A3E;
+  --mc-blue: #3A7AAD;
+  --mc-blue-light: #5A98C4;
+  --mc-success: #248A3D;
+  --mc-warning: #B25000;
+  --mc-danger: #D70015;
+  --mc-text: #1D1D1F;
+  --mc-text-muted: #86868B;
+  color-scheme: light;
 }
 
 body {
-  background: var(--bg);
-  color: #e2e8f0;
-  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--mc-bg);
+  color: var(--mc-text);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #2e2e4e; }
+/* Typography tokens */
+h1, h2, h3 { letter-spacing: -0.02em; }
+code, pre, .font-mono { font-family: var(--font-geist-mono), "SF Mono", monospace; }
+
+/* ── Dot Grid — static base layer ── */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+  pointer-events: none;
+  z-index: 0;
+}
+.light body::before {
+  background-image: radial-gradient(circle, rgba(0,0,0,0.04) 1px, transparent 1px);
+}
+
+/* ── Glassmorphism — Apple-style vibrancy ── */
+.glass {
+  background: rgba(28, 28, 30, 0.8);
+  backdrop-filter: blur(20px) saturate(1.8);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.light .glass {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(20px) saturate(1.8);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.glass-strong {
+  background: rgba(28, 28, 30, 0.92);
+  backdrop-filter: blur(40px) saturate(1.8);
+  -webkit-backdrop-filter: blur(40px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.light .glass-strong {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(40px) saturate(1.8);
+  -webkit-backdrop-filter: blur(40px) saturate(1.8);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* ── Animated Gradient Border ── */
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes border-rotate { to { --border-angle: 360deg; } }
+
+.animated-border { position: relative; border-radius: 1rem; }
+.animated-border::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--border-angle), transparent 40%, #E08A3E 50%, #D4965A 55%, #4A8EC2 60%, transparent 70%);
+  animation: border-rotate 4s linear infinite;
+  z-index: -1;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+  padding: 1.5px;
+}
+
+/* ── Glow Pulse ── */
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 15px rgba(224, 138, 62, 0.2), 0 0 30px rgba(224, 138, 62, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(224, 138, 62, 0.35), 0 0 40px rgba(224, 138, 62, 0.15); }
+}
+.glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
+
+/* ── Cursor Blink ── */
+@keyframes blink-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.cursor-blink::after { content: "▊"; animation: blink-cursor 1s step-end infinite; color: var(--mc-accent); font-size: 0.875rem; }
+
+/* ── Scrollbar — Apple style ── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+.light ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); }
+.light ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.3); }
+
+/* ── Selection ── */
+::selection { background: rgba(224, 138, 62, 0.3); color: #fff; }
+.light ::selection { background: rgba(166, 100, 40, 0.2); color: #1D1D1F; }
+
+/* ── CPU Architecture ── */
+.cpu-architecture { offset-anchor: 10px 0px; animation: animation-path; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(0.75, -0.01, 0, 0.99); }
+.cpu-line-1 { offset-path: path("M 10 20 h 79.5 q 5 0 5 5 v 30"); animation-duration: 5s; animation-delay: 1s; }
+.cpu-line-2 { offset-path: path("M 180 10 h -69.7 q -5 0 -5 5 v 40"); animation-delay: 6s; animation-duration: 2s; }
+.cpu-line-3 { offset-path: path("M 130 20 v 21.8 q 0 5 -5 5 h -25"); animation-delay: 4s; animation-duration: 6s; }
+.cpu-line-4 { offset-path: path("M 170 80 v -21.8 q 0 -5 -5 -5 h -65"); animation-delay: 3s; animation-duration: 3s; }
+.cpu-line-5 { offset-path: path("M 135 65 h 15 q 5 0 5 5 v 10 q 0 5 -5 5 h -39.8 q -5 0 -5 -5 v -35"); animation-delay: 9s; animation-duration: 4s; }
+.cpu-line-6 { offset-path: path("M 94.8 95 v -46"); animation-delay: 3s; animation-duration: 7s; }
+.cpu-line-7 { offset-path: path("M 88 88 v -15 q 0 -5 -5 -5 h -10 q -5 0 -5 -5 v -5 q 0 -5 5 -5 h 28"); animation-delay: 4s; animation-duration: 4s; }
+.cpu-line-8 { offset-path: path("M 30 30 h 25 q 5 0 5 5 v 6.5 q 0 5 5 5 h 35"); animation-delay: 3s; animation-duration: 3s; }
+@keyframes animation-path { 0% { offset-distance: 0%; } 100% { offset-distance: 100%; } }
+@keyframes speen { 0% { transform: rotate(10deg); } 50% { transform: rotate(190deg); } 100% { transform: rotate(370deg); } }
+@keyframes woah { 0%, 100% { transform: scale(1); } 50% { transform: scale(0.75); } }

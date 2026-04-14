@@ -45,14 +45,6 @@ class WalletBalanceResponse(BaseModel):
     available: float  # remaining - reserved
 
 
-class CostEstimate(BaseModel):
-    """Pre-flight cost estimation."""
-
-    total_estimated_cost: float
-    breakdown: list[CostEstimateItem]
-    confidence: float = Field(ge=0, le=1)
-
-
 class CostEstimateItem(BaseModel):
     """Cost estimate per agent/step."""
 
@@ -60,3 +52,11 @@ class CostEstimateItem(BaseModel):
     agent_name: str | None = None
     estimated_tokens: int
     estimated_cost: float
+
+
+class CostEstimate(BaseModel):
+    """Pre-flight cost estimation."""
+
+    total_estimated_cost: float
+    breakdown: list[CostEstimateItem]
+    confidence: float = Field(ge=0, le=1)

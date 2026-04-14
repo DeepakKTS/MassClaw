@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { FileText } from "lucide-react";
 
 export default function AuditPage() {
   const { data, isLoading } = useQuery({
@@ -11,40 +10,40 @@ export default function AuditPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 py-6">
       <div>
-        <h1 className="text-2xl font-bold">Audit Trail</h1>
-        <p className="text-massclaw-text-muted mt-1">Complete decision log across the system</p>
+        <h1 className="text-heading">Audit Trail</h1>
+        <p className="text-massclaw-text-muted mt-1 text-sm">Complete decision log across the system</p>
       </div>
 
-      <div className="bg-massclaw-surface border border-massclaw-border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-massclaw-border">
-              <th className="text-left p-3 text-massclaw-text-muted font-medium">Event</th>
-              <th className="text-left p-3 text-massclaw-text-muted font-medium">Actor</th>
-              <th className="text-left p-3 text-massclaw-text-muted font-medium">Summary</th>
-              <th className="text-left p-3 text-massclaw-text-muted font-medium">Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading ? (
-              <tr><td colSpan={4} className="p-4 text-massclaw-text-muted">Loading...</td></tr>
-            ) : data?.items?.map((log: any) => (
-              <tr key={log.log_id} className="border-b border-massclaw-border/50 hover:bg-massclaw-border/20">
-                <td className="p-3">
-                  <span className="text-xs px-2 py-0.5 rounded bg-massclaw-border">{log.event_type}</span>
-                </td>
-                <td className="p-3 text-massclaw-text-muted">{log.actor_id}</td>
-                <td className="p-3 max-w-md truncate">{log.input_summary || log.output_summary || "—"}</td>
-                <td className="p-3 text-massclaw-text-muted text-xs">{new Date(log.created_at).toLocaleString()}</td>
-              </tr>
-            ))}
-            {!isLoading && (!data?.items?.length) && (
-              <tr><td colSpan={4} className="p-8 text-center text-massclaw-text-muted">No audit events yet</td></tr>
-            )}
-          </tbody>
-        </table>
+      <div className="glass rounded-xl overflow-hidden font-mono">
+        <div className="p-4 border-b border-white/[0.06] flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span className="text-[10px] text-emerald-400 uppercase tracking-wider">System Log</span>
+        </div>
+        <div className="divide-y divide-white/[0.04]">
+          {isLoading ? (
+            <div className="p-4 text-massclaw-text-muted text-sm">Loading...</div>
+          ) : data?.items?.map((log: any) => (
+            <div key={log.log_id} className="px-4 py-3 hover:bg-white/[0.02] transition-colors text-xs">
+              <div className="flex items-center gap-3">
+                <span className="text-massclaw-text-muted whitespace-nowrap">
+                  {new Date(log.created_at).toLocaleString()}
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px]">
+                  {log.event_type}
+                </span>
+                <span className="text-massclaw-text-muted">{log.actor_id}</span>
+                <span className="text-massclaw-text truncate flex-1">
+                  {log.input_summary || log.output_summary || "—"}
+                </span>
+              </div>
+            </div>
+          ))}
+          {!isLoading && (!data?.items?.length) && (
+            <div className="p-8 text-center text-massclaw-text-muted text-sm">No audit events yet</div>
+          )}
+        </div>
       </div>
     </div>
   );
