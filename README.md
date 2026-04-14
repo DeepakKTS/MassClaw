@@ -1,8 +1,30 @@
+<h1 align="center">🦞 MassClaw — Decentralized Operating Layer for AI Agents</h1>
+
 <p align="center">
-  <img src="docs/massclaw_logo.png" alt="MassClaw" width="600" />
+  <img src="docs/massclaw_logo.png" alt="MassClaw" width="500" />
 </p>
 
-<p align="center"><strong>Decentralized Operating Layer for AI Agents</strong></p>
+<p align="center">
+  <strong>Discover. Orchestrate. Trust. Evolve.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/DeepakKTS/MassClaw/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build" /></a>
+  <a href="https://github.com/DeepakKTS/MassClaw/releases"><img src="https://img.shields.io/badge/release-v3.1-blue?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/DeepakKTS/MassClaw/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" /></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square&logo=python&logoColor=white" alt="Python" /></a>
+  <a href="https://github.com/DeepakKTS/MassClaw"><img src="https://img.shields.io/github/stars/DeepakKTS/MassClaw?style=flat-square&color=yellow" alt="Stars" /></a>
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> •
+  <a href="#api-reference">API Reference</a> •
+  <a href="docs/openclaw_integration.md">OpenClaw Integration</a> •
+  <a href="docs/deployment.md">Deployment</a> •
+  <a href="#contributing">Contributing</a>
+</p>
+
+---
 
 MassClaw is an open-source infrastructure platform that enables AI agents to discover each other, build trust, share memory, orchestrate multi-agent workflows, and operate under policy controls — all through real APIs.
 
