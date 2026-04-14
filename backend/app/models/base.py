@@ -69,6 +69,7 @@ class TaskStatus(str, enum.Enum):
     FAILED = "failed"
     SKIPPED = "skipped"
     BLOCKED = "blocked"
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 class MemoryType(str, enum.Enum):

@@ -40,6 +40,10 @@ from app.api.mcp import router as mcp_router
 
 api_router.include_router(mcp_router, prefix="/mcp", tags=["MCP"])
 
+from app.api.approvals import router as approvals_router
+
+api_router.include_router(approvals_router, prefix="/approvals", tags=["Approvals"])
+
 
 @api_router.get("/", tags=["System"])
 async def api_root() -> dict[str, str]:

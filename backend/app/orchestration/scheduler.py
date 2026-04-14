@@ -263,6 +263,83 @@ class WorkflowScheduler:
 
                 await self._publish_progress(workflow, dag, "task_started", node=node, agent=agent)
 
+            # Phase 1.5: Approval gate for high-risk capabilities
+            APPROVAL_REQUIRED_CAPABILITIES = {"risk-assessment", "compliance-check", "safety-analysis"}
+            active_nodes = [n for n in ready_nodes if n.node_id in node_contexts]
+            nodes_needing_approval = [n for n in active_nodes if n.capability in APPROVAL_REQUIRED_CAPABILITIES]
+
+            if nodes_needing_approval:
+                from app.core.redis import get_redis_manager
+                from app.safety.approval import ApprovalManager
+
+                approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
+
+                for node in nodes_needing_approval:
+                    task_rec = node_contexts[node.node_id][0]
+                    agent = node_contexts[node.node_id][1]
+                    request = await approval_mgr.request_approval(
+                        workflow_id=str(workflow.workflow_id),
+                        task_id=str(task_rec.task_id),
+                        action=f"execute_{node.capability}",
+                        context={
+                            "workflow_id": str(workflow.workflow_id),
+                            "task_id": str(task_rec.task_id),
+                            "capability": node.capability,
+                            "description": node.description,
+                            "agent": agent.name,
+                        },
+                        policy_rule="high_risk_task",
+                        timeout_seconds=300,
+                    )
+
+                    # Non-blocking: check if auto-approved by policy, otherwise mark as awaiting
+                    try:
+                        decision = await approval_mgr.check_status(request.request_id)
+                    except ValueError:
+                        decision = None
+
+                    if decision and decision.status == "pending":
+                        task_rec.status = TaskStatus.AWAITING_APPROVAL
+                        task_rec.error_message = f"Awaiting human approval (request: {request.request_id})"
+                        await self.session.flush()
+
+                        workflow.status = WorkflowStatus.PAUSED
+                        await self.session.flush()
+
+                        await self._publish_progress(
+                            workflow,
+                            dag,
+                            "approval_required",
+                            node=node,
+                            extra={
+                                "approval_id": request.request_id,
+                                "capability": node.capability,
+                            },
+                        )
+
+                        # Wait for decision (with timeout)
+                        final = await approval_mgr.wait_for_decision(request.request_id, timeout=300)
+
+                        workflow.status = WorkflowStatus.RUNNING
+                        await self.session.flush()
+
+                        if final and final.status == "denied":
+                            dag.mark_failed(node.node_id, error=f"Denied by human: {final.decided_by or 'reviewer'}")
+                            task_rec.status = TaskStatus.SKIPPED
+                            task_rec.error_message = (
+                                f"Denied: {final.context.get('denial_reason', 'No reason provided')}"
+                            )
+                            await self.session.flush()
+                            # Remove from active nodes so it's skipped in Phase 2
+                            if node.node_id in node_contexts:
+                                del node_contexts[node.node_id]
+                            continue
+
+                        # Approved or expired — restore task status and proceed
+                        task_rec.status = TaskStatus.RUNNING
+                        task_rec.error_message = None
+                        await self.session.flush()
+
             # Phase 2: Run LLM calls in parallel (budget already reserved)
             # Tiered Model Cascade: Haiku for simple tasks, Sonnet for complex/verification
             HAIKU_CAPABILITIES = {
@@ -390,6 +467,7 @@ class WorkflowScheduler:
                 await self._store_in_cache(node, user_prompt, resp)
                 return node, resp
 
+            # Recompute active_nodes to exclude any denied/removed nodes from Phase 1.5
             active_nodes = [n for n in ready_nodes if n.node_id in node_contexts]
             llm_results = await asyncio.gather(*[_llm_call(n) for n in active_nodes])
 
@@ -500,6 +578,35 @@ class WorkflowScheduler:
                                 )
                         except Exception as e:
                             logger.warning("consensus_verification_skipped", error=str(e))
+
+                    # Post-execution review gate for low-confidence outputs
+                    if task_rec.confidence is not None and task_rec.confidence < 0.4:
+                        try:
+                            from app.core.redis import get_redis_manager
+                            from app.safety.approval import ApprovalManager
+
+                            review_mgr = ApprovalManager(get_redis_manager().get_cache_client())
+                            await review_mgr.request_approval(
+                                workflow_id=str(workflow.workflow_id),
+                                task_id=str(task_rec.task_id),
+                                action="review_low_confidence_output",
+                                context={
+                                    "workflow_id": str(workflow.workflow_id),
+                                    "task_id": str(task_rec.task_id),
+                                    "capability": node.capability,
+                                    "confidence": task_rec.confidence,
+                                    "output_preview": response.content[:500],
+                                },
+                                policy_rule="low_confidence_review",
+                                timeout_seconds=120,
+                            )
+                            logger.info(
+                                "low_confidence_review_requested",
+                                node_id=node.node_id,
+                                confidence=task_rec.confidence,
+                            )
+                        except Exception as e:
+                            logger.warning("review_request_failed", error=str(e))
 
                     await self._publish_progress(
                         workflow,
