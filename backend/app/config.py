@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     tool_max_iterations: int = 5
     tool_code_timeout_seconds: int = 30
     tool_code_memory_mb: int = 256
+    tool_code_cpu_quota: int = 50000  # CPU quota (50000 = 50% of one core)
+    tool_code_disk_mb: int = 100  # Max tmpfs disk for code execution
     tool_workspace_base: str = "/tmp/massclaw/workspaces"
     brave_search_api_key: str = ""
     tool_docker_image: str = "python:3.12-slim"

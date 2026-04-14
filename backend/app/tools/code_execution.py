@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from app.config import get_settings
@@ -78,6 +79,8 @@ class CodeExecutionTool(ToolProvider):
         timeout: int = settings.tool_code_timeout_seconds
         memory_mb: int = settings.tool_code_memory_mb
         docker_image: str = settings.tool_docker_image
+        cpu_quota: int = settings.tool_code_cpu_quota
+        disk_mb: int = settings.tool_code_disk_mb
 
         lang_cfg = _SUPPORTED_LANGUAGES[language]
         filename: str = lang_cfg["filename"]
@@ -100,6 +103,9 @@ class CodeExecutionTool(ToolProvider):
                 "Memory": memory_mb * 1024 * 1024,
                 "MemorySwap": memory_mb * 1024 * 1024,  # disable swap
                 "PidsLimit": 64,
+                "CpuQuota": cpu_quota,  # Default 50000 = 50% of one core
+                "CpuPeriod": 100000,
+                "Tmpfs": {"/tmp": f"size={disk_mb}m,noexec=false"},
             },
         }
 
@@ -113,6 +119,7 @@ class CodeExecutionTool(ToolProvider):
             )
 
         container = None
+        start_time = time.time()
         try:
             container = await docker.containers.create(config=container_config)
             await container.start()
@@ -142,9 +149,11 @@ class CodeExecutionTool(ToolProvider):
                 output = output[:_LOG_CAP] + "\n…(output truncated)"
 
             # Retrieve exit code
+            end_time = time.time()
             container_info = await container.show()
             exit_code: int = container_info["State"]["ExitCode"]
             succeeded = exit_code == 0
+            execution_time_ms = int((end_time - start_time) * 1000)
 
             return ToolResult(
                 content=output if output else "(no output)",
@@ -154,6 +163,7 @@ class CodeExecutionTool(ToolProvider):
                     "exit_code": exit_code,
                     "truncated": truncated,
                     "docker_image": docker_image,
+                    "execution_time_ms": execution_time_ms,
                 },
             )
 
