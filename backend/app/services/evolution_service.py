@@ -302,13 +302,14 @@ class EvolutionService:
         if len(rows) < 5:
             return {"promoted": [], "demoted": []}
 
-        # Calculate thresholds
+        # Calculate thresholds (composites list is sorted DESC)
         composites = [float(r.avg_composite) for r in rows]
-        promote_threshold_idx = max(0, int(len(composites) * (self.PROMOTE_PERCENTILE / 100)))
-        demote_threshold_idx = max(0, int(len(composites) * (self.DEMOTE_PERCENTILE / 100)))
+        n = len(composites)
+        promote_threshold_idx = max(0, int(n * (1 - self.PROMOTE_PERCENTILE / 100)))
+        demote_threshold_idx = min(n - 1, int(n * (1 - self.DEMOTE_PERCENTILE / 100)))
 
-        promote_threshold = composites[min(promote_threshold_idx, len(composites) - 1)]
-        demote_threshold = composites[min(demote_threshold_idx, len(composites) - 1)]
+        promote_threshold = composites[promote_threshold_idx]
+        demote_threshold = composites[demote_threshold_idx]
 
         promoted: list[str] = []
         demoted: list[str] = []
