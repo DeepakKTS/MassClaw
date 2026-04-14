@@ -17,7 +17,7 @@ from sqlalchemy import select
 SEED_AGENTS = [
     {
         "name": "Intake Agent",
-        "description": "Healthcare operations intake specialist. Parses user requests and extracts operational scope, constraints, desired outcomes, and stakeholders.",
+        "description": "Intake specialist. Parses user requests and extracts scope, constraints, objectives, stakeholders, and success criteria.",
         "capabilities": ["intake", "classify", "extract-requirements"],
         "endpoint": "internal://intake-agent",
         "cost_profile": {"avg_cost_per_call": 0.003, "model": "claude-sonnet"},
@@ -28,7 +28,7 @@ SEED_AGENTS = [
     },
     {
         "name": "Research Agent",
-        "description": "Healthcare operations researcher. Gathers background context, industry benchmarks, common bottleneck patterns, and relevant metrics for the specified domain.",
+        "description": "Research specialist. Gathers background context, benchmarks, industry data, and relevant patterns for the specified domain.",
         "capabilities": ["research", "data-retrieval", "literature-review"],
         "endpoint": "internal://research-agent",
         "cost_profile": {"avg_cost_per_call": 0.008, "model": "claude-sonnet"},
@@ -39,7 +39,7 @@ SEED_AGENTS = [
     },
     {
         "name": "Process Mapping Agent",
-        "description": "Workflow analysis specialist. Identifies patient flow patterns, process bottlenecks, resource constraints, and operational inefficiencies.",
+        "description": "Workflow analysis specialist. Identifies process flow patterns, bottlenecks, resource constraints, and operational inefficiencies.",
         "capabilities": ["process-analysis", "workflow-mapping", "bottleneck-detection"],
         "endpoint": "internal://process-mapping-agent",
         "cost_profile": {"avg_cost_per_call": 0.010, "model": "claude-sonnet"},
@@ -50,7 +50,7 @@ SEED_AGENTS = [
     },
     {
         "name": "Risk Agent",
-        "description": "Clinical and operational risk assessor. Identifies regulatory risks, patient safety concerns, compliance gaps, and operational vulnerabilities.",
+        "description": "Risk assessment specialist. Identifies regulatory risks, compliance gaps, safety concerns, and operational vulnerabilities.",
         "capabilities": ["risk-assessment", "compliance-check", "safety-analysis"],
         "endpoint": "internal://risk-agent",
         "cost_profile": {"avg_cost_per_call": 0.012, "model": "claude-opus"},
@@ -61,7 +61,7 @@ SEED_AGENTS = [
     },
     {
         "name": "Optimization Agent",
-        "description": "Scheduling and resource allocation optimizer. Proposes staffing improvements, scheduling changes, and resource reallocation strategies.",
+        "description": "Resource allocation optimizer. Proposes scheduling improvements, capacity adjustments, and resource reallocation strategies.",
         "capabilities": ["optimization", "scheduling", "resource-allocation"],
         "endpoint": "internal://optimization-agent",
         "cost_profile": {"avg_cost_per_call": 0.010, "model": "claude-sonnet"},

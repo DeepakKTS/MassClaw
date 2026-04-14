@@ -11,32 +11,21 @@ from app.core.database import Base, get_session_factory, init_db, dispose_db, ge
 from app.core.redis import init_redis, dispose_redis, get_redis_manager
 from app.models import *  # noqa: F401, F403 — ensure all models registered
 
-# Initialize once at module import time
-_db_initialized = False
-_redis_initialized = False
-
-
-async def _ensure_db() -> None:
-    global _db_initialized
-    if not _db_initialized:
-        init_db()
-        engine = get_engine()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        _db_initialized = True
-
-
-async def _ensure_redis() -> None:
-    global _redis_initialized
-    if not _redis_initialized:
-        await init_redis()
-        _redis_initialized = True
-
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Per-test database session with rollback."""
-    await _ensure_db()
+    """Per-test database session with rollback.
+
+    Disposes and re-creates the engine each time to ensure the connection pool
+    is bound to the current event loop (prevents 'Future attached to a different
+    loop' errors with function-scoped asyncio event loops).
+    """
+    await dispose_db()
+    init_db()
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     factory = get_session_factory()
     async with factory() as session:
         yield session
@@ -46,7 +35,11 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 @pytest_asyncio.fixture
 async def redis_client():
     """Per-test Redis client."""
-    await _ensure_redis()
+    try:
+        await dispose_redis()
+    except Exception:
+        pass
+    await init_redis()
     client = get_redis_manager().get_cache_client()
     yield client
 

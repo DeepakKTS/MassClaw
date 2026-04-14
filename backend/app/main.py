@@ -46,7 +46,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
         "embedding_service_initialized",
         model=embedding_service.model_name,
         dimensions=embedding_service.dimensions,
+        loaded=embedding_service.is_loaded,
     )
+
+    # Pre-warm injection detection bank so the first user request isn't slow
+    if embedding_service.is_loaded:
+        try:
+            from app.safety.injection_detector import InjectionDetector
+
+            detector = InjectionDetector()
+            await detector._ensure_injection_bank()
+            logger.info("injection_bank_prewarmed")
+        except Exception as e:
+            logger.warning("injection_bank_prewarm_failed", error=str(e))
 
     yield
 

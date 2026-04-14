@@ -26,6 +26,7 @@ class EmbeddingService:
         self._model: Any = None
         self._model_name: str = ""
         self._model_info: EmbeddingModelInfo | None = None
+        self._load_error: str | None = None
         self._lock = threading.Lock()
 
     @property
@@ -44,6 +45,7 @@ class EmbeddingService:
         """Load a sentence-transformers model synchronously.
 
         Thread-safe: uses a lock to prevent concurrent loads during hot-swap.
+        Raises RuntimeError if the model cannot be loaded.
         """
         if model_name is None:
             model_name = get_settings().embedding_model
@@ -56,15 +58,25 @@ class EmbeddingService:
             info = get_model_info(model_name)
 
             logger.info("loading_embedding_model", model=model_name, dimensions=info.dimensions)
-            from sentence_transformers import SentenceTransformer
+            try:
+                from sentence_transformers import SentenceTransformer
 
-            new_model = SentenceTransformer(model_name)
+                new_model = SentenceTransformer(model_name)
+            except Exception as e:
+                self._load_error = str(e)
+                logger.error(
+                    "embedding_model_load_failed",
+                    model=model_name,
+                    error=str(e),
+                )
+                raise RuntimeError(f"Failed to load embedding model '{model_name}': {e}") from e
 
             # Atomic swap
             old_model = self._model
             self._model = new_model
             self._model_name = model_name
             self._model_info = info
+            self._load_error = None
 
             # Free old model
             del old_model
@@ -73,6 +85,11 @@ class EmbeddingService:
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
+            if self._load_error:
+                raise RuntimeError(
+                    f"Embedding model unavailable (previous load failed: {self._load_error}). "
+                    "Restart the service or call load_model() to retry."
+                )
             self.load_model()
 
     def _embed_sync(self, text: str) -> list[float]:
@@ -135,8 +152,21 @@ def get_embedding_service() -> EmbeddingService:
 
 
 async def init_embedding_service() -> EmbeddingService:
-    """Initialize the embedding service and preload the configured model."""
+    """Initialize the embedding service and preload the configured model.
+
+    If the model fails to load (e.g., network timeout, missing model), the
+    service starts in a degraded state. Embedding-dependent features (semantic
+    search, injection detection) will be unavailable, but the app still serves
+    non-embedding endpoints.
+    """
     service = get_embedding_service()
     if not service.is_loaded:
-        await asyncio.to_thread(service.load_model)
+        try:
+            await asyncio.to_thread(service.load_model)
+        except RuntimeError as e:
+            logger.error(
+                "embedding_service_degraded",
+                error=str(e),
+                hint="App will start but embedding features are unavailable.",
+            )
     return service

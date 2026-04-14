@@ -341,17 +341,21 @@ class WorkflowScheduler:
                 now = datetime.now(timezone.utc)
                 latency_ms = response.latency_ms
 
+                charged = False
                 try:
                     # Charge actual cost against the reservation
                     actual_credits = tokens_to_credits(response.cost)
                     reservation = reservations.get(node.node_id)
+                    idem_key = f"{workflow.workflow_id}:{node.node_id}:charge"
                     if reservation:
                         await self.wallet_service.charge(
                             workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
                             actual_cost=actual_credits,
                             reservation_event_id=reservation.wallet_event_id,
                             reason=f"Task {node.node_id} completed: {response.total_tokens} tokens",
+                            idempotency_key=idem_key,
                         )
+                        charged = True
 
                     # Write to shared memory
                     await self.memory_service.write_memory(
@@ -390,6 +394,32 @@ class WorkflowScheduler:
                     await self.session.flush()
 
                     dag.mark_completed(node.node_id, output=response.content)
+
+                    # Consensus verification for high-risk capabilities
+                    HIGH_RISK_CAPABILITIES = {"risk-assessment", "compliance-check", "safety-analysis"}
+                    if node.capability in HIGH_RISK_CAPABILITIES:
+                        try:
+                            from app.services.consensus_service import ConsensusService
+                            consensus_svc = ConsensusService(session=self.session)
+                            consensus = await consensus_svc.verify_with_consensus(
+                                output=response.content,
+                                task_description=f"{node.capability}: {node.description}",
+                            )
+                            if not consensus.agreed:
+                                task_rec.output["consensus_warning"] = (
+                                    f"Consensus not reached (agreement: {consensus.weighted_agreement:.0%}). "
+                                    "Output may require manual review."
+                                )
+                                task_rec.confidence = max(0.3, task_rec.confidence * consensus.weighted_agreement)
+                                await self.session.flush()
+                                logger.warning(
+                                    "consensus_not_reached",
+                                    node_id=node.node_id,
+                                    agreement=round(consensus.weighted_agreement, 3),
+                                )
+                        except Exception as e:
+                            logger.warning("consensus_verification_skipped", error=str(e))
+
                     await self._publish_progress(
                         workflow, dag, "task_completed", node=node, agent=agent,
                         extra={
@@ -407,6 +437,16 @@ class WorkflowScheduler:
                     )
 
                 except Exception as e:
+                    # Release reservation if charge hasn't happened yet
+                    if not charged and node.node_id in reservations:
+                        try:
+                            await self.wallet_service.release_reservation(
+                                workflow_id=workflow.workflow_id,
+                                reservation_event_id=reservations[node.node_id].wallet_event_id,
+                                reason=f"Task {node.node_id} post-processing failed: {e}",
+                            )
+                        except Exception:
+                            logger.warning("reservation_release_failed", node_id=node.node_id)
                     task_rec.status = TaskStatus.FAILED
                     task_rec.error_message = str(e)
                     await self.session.flush()
@@ -419,22 +459,31 @@ class WorkflowScheduler:
             await self._publish_progress(workflow, dag, "step_batch_completed")
 
         # Synthesize final output
+        synthesis_failed = False
         try:
             final_result = await self.synthesizer.synthesize(dag, workflow.prompt)
         except Exception as e:
             logger.error("synthesis_failed", error=str(e))
+            synthesis_failed = True
             final_result = {
                 "content": "Synthesis failed. Individual task outputs are available in the DAG.",
                 "confidence": 0.0,
                 "summary": f"Synthesis error: {e}",
+                "synthesis_failed": True,
             }
 
         # Finalize workflow
-        workflow.status = (
-            WorkflowStatus.COMPLETED if dag.failed_count == 0 else WorkflowStatus.FAILED
-        )
-        if dag.completed_count > 0 and dag.failed_count > 0:
-            workflow.status = WorkflowStatus.COMPLETED  # Partial success still completes
+        if dag.failed_count > 0 and dag.completed_count == 0:
+            workflow.status = WorkflowStatus.FAILED
+        elif dag.failed_count > 0 and dag.completed_count > 0:
+            workflow.status = WorkflowStatus.COMPLETED  # Partial success
+            final_result["partial"] = True
+            final_result["failed_tasks"] = dag.failed_count
+        else:
+            workflow.status = WorkflowStatus.COMPLETED
+
+        if synthesis_failed:
+            final_result["synthesis_failed"] = True
         workflow.completed_at = datetime.now(timezone.utc)
         workflow.result = final_result
         workflow.dag_snapshot = dag.to_dict()
@@ -562,33 +611,36 @@ class WorkflowScheduler:
         """
         try:
             from app.embeddings.service import get_embedding_service
-            from sqlalchemy import select, text
+            from sqlalchemy import text
 
             embedding_svc = get_embedding_service()
-            if not embedding_svc:
+            if not embedding_svc or not embedding_svc.is_loaded:
                 return None
 
             # Generate embedding for the current prompt
-            prompt_embedding = await embedding_svc.generate_embedding(prompt[:500])
+            prompt_embedding = await embedding_svc.embed(prompt[:500])
+
+            # Format as pgvector-compatible string: [0.1,0.2,...]
+            embedding_str = f"[{','.join(str(x) for x in prompt_embedding)}]"
 
             # Query memory records for similar completed task outputs
-            # Look for RESULT type memories with high similarity
+            # Use CAST() instead of :: to avoid SQLAlchemy bind-param collision
             result = await self.session.execute(
                 text("""
-                    SELECT content, 1 - (embedding <=> :embedding::vector) as similarity
+                    SELECT content,
+                           1 - (embedding <=> CAST(:embedding AS vector)) as similarity
                     FROM memory_records
-                    WHERE memory_type = 'RESULT'
+                    WHERE memory_type = 'result'
                       AND confidence >= 0.8
                       AND created_at > NOW() - INTERVAL '24 hours'
-                    ORDER BY embedding <=> :embedding::vector
+                    ORDER BY embedding <=> CAST(:embedding AS vector)
                     LIMIT 1
                 """),
-                {"embedding": str(prompt_embedding)},
+                {"embedding": embedding_str},
             )
             row = result.fetchone()
 
             if row and row.similarity >= 0.88:
-                # High-confidence cache hit — return synthetic response
                 logger.info(
                     "semantic_cache_hit",
                     capability=node.capability,
@@ -599,10 +651,9 @@ class WorkflowScheduler:
                     model="cache",
                     input_tokens=0,
                     output_tokens=0,
-                    total_tokens=0,
                     cost=Decimal("0"),
                     latency_ms=0.5,
-                    stop_reason="cache_hit",
+                    metadata={"stop_reason": "cache_hit", "provider": "cache"},
                 )
             return None
         except Exception as e:
@@ -613,20 +664,43 @@ class WorkflowScheduler:
     async def _store_in_cache(self, node: DAGNode, prompt: str, response: LLMResponse) -> None:
         """Store a task result in the semantic cache for future reuse.
 
-        Writes to memory_records so future similar queries can hit the cache.
-        Only caches successful results with meaningful content.
+        Writes to memory_records with the prompt embedding so future similar
+        queries can hit the cache via _check_semantic_cache().
         """
         try:
             if not response.content or len(response.content) < 50:
                 return  # Don't cache trivial responses
 
             from app.embeddings.service import get_embedding_service
+
             embedding_svc = get_embedding_service()
-            if not embedding_svc:
+            if not embedding_svc or not embedding_svc.is_loaded:
                 return
 
-            # The memory write will happen via the normal memory_service flow
-            # in the scheduler's Phase 3 — no need to duplicate here.
-            # This method is a hook for future dedicated cache storage.
-        except Exception:
-            pass  # Best-effort caching
+            # Generate embedding of the prompt (not the response) for lookup matching
+            prompt_embedding = await embedding_svc.embed(prompt[:500])
+
+            from app.models.memory import MemoryRecord, MemoryType as MemType
+
+            cache_record = MemoryRecord(
+                workflow_id=None,  # Cache entries are cross-workflow
+                source_agent_id=None,
+                memory_type=MemType.RESULT,
+                content=response.content[:5000],  # Cap stored content
+                embedding=prompt_embedding,
+                confidence=0.85,
+                metadata_={
+                    "capability": node.capability,
+                    "model": response.model,
+                    "cached": True,
+                },
+            )
+            self.session.add(cache_record)
+            await self.session.flush()
+            logger.debug(
+                "semantic_cache_stored",
+                capability=node.capability,
+                content_length=len(response.content),
+            )
+        except Exception as e:
+            logger.debug("semantic_cache_store_error", error=str(e))
