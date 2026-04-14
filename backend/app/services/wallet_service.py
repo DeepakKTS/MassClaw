@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import redis.asyncio as aioredis
 from sqlalchemy import and_, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import EventBus
@@ -79,16 +80,32 @@ class WalletService:
         agent_id: uuid.UUID,
         estimated_cost: float,
         reason: str,
+        idempotency_key: str | None = None,
     ) -> WalletEvent:
         """Reserve budget before agent execution.
 
         Uses SELECT FOR UPDATE on the workflow row to prevent concurrent
         reservations from exceeding the budget (atomic operation).
 
+        If an idempotency_key is provided and a WalletEvent with that key
+        already exists, the existing event is returned without creating a
+        duplicate.
+
         Raises BudgetExhaustedError if insufficient budget available.
         """
         if estimated_cost <= 0:
             raise ValidationError("Estimated cost must be positive")
+
+        # Idempotency check: return existing event if key already used
+        if idempotency_key:
+            existing = await self._find_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                logger.info(
+                    "reserve_budget_idempotent_hit",
+                    idempotency_key=idempotency_key,
+                    event_id=str(existing.wallet_event_id),
+                )
+                return existing
 
         # Lock the workflow row to prevent concurrent reservation races
         result = await self.session.execute(
@@ -123,9 +140,21 @@ class WalletService:
             balance_after=Decimal(str(balance_after)),
             reason=reason,
             metadata_={"estimated_cost": estimated_cost},
+            idempotency_key=idempotency_key,
         )
         self.session.add(event)
-        await self.session.flush()
+
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            # Unique constraint violation on idempotency_key — concurrent insert
+            await self.session.rollback()
+            if idempotency_key:
+                existing = await self._find_by_idempotency_key(idempotency_key)
+                if existing is not None:
+                    return existing
+            raise
+
         await self.session.refresh(event)
 
         # Invalidate cache
@@ -159,12 +188,28 @@ class WalletService:
         actual_cost: float,
         reservation_event_id: uuid.UUID,
         reason: str,
+        idempotency_key: str | None = None,
     ) -> WalletEvent:
         """Finalize a charge: release reservation and record actual cost.
 
         If actual_cost < reserved amount, the difference is credited back.
         If actual_cost > reserved amount, the additional cost is charged.
+
+        If an idempotency_key is provided and a WalletEvent with that key
+        already exists, the existing event is returned without creating a
+        duplicate.
         """
+        # Idempotency check: return existing event if key already used
+        if idempotency_key:
+            existing = await self._find_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                logger.info(
+                    "charge_idempotent_hit",
+                    idempotency_key=idempotency_key,
+                    event_id=str(existing.wallet_event_id),
+                )
+                return existing
+
         # Verify reservation exists
         res_result = await self.session.execute(
             select(WalletEvent).where(
@@ -210,6 +255,7 @@ class WalletService:
                 "actual_cost": actual_cost,
                 "savings": round(reserved_amount - actual_cost, 4),
             },
+            idempotency_key=idempotency_key,
         )
         self.session.add(charge_event)
 
@@ -258,8 +304,25 @@ class WalletService:
         workflow_id: uuid.UUID,
         reservation_event_id: uuid.UUID,
         reason: str = "Reservation released",
+        idempotency_key: str | None = None,
     ) -> WalletEvent:
-        """Release a reservation without charging (e.g. task was skipped or cancelled)."""
+        """Release a reservation without charging (e.g. task was skipped or cancelled).
+
+        If an idempotency_key is provided and a WalletEvent with that key
+        already exists, the existing event is returned without creating a
+        duplicate.
+        """
+        # Idempotency check: return existing event if key already used
+        if idempotency_key:
+            existing = await self._find_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                logger.info(
+                    "release_reservation_idempotent_hit",
+                    idempotency_key=idempotency_key,
+                    event_id=str(existing.wallet_event_id),
+                )
+                return existing
+
         res_result = await self.session.execute(
             select(WalletEvent).where(
                 and_(
@@ -282,9 +345,21 @@ class WalletService:
             balance_after=Decimal("0"),  # Recomputed on read
             reason=reason,
             metadata_={"reservation_event_id": str(reservation_event_id)},
+            idempotency_key=idempotency_key,
         )
         self.session.add(release_event)
-        await self.session.flush()
+
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            # Unique constraint violation on idempotency_key — concurrent insert
+            await self.session.rollback()
+            if idempotency_key:
+                existing = await self._find_by_idempotency_key(idempotency_key)
+                if existing is not None:
+                    return existing
+            raise
+
         await self.session.refresh(release_event)
 
         await self._invalidate_cache(workflow_id)
@@ -423,6 +498,17 @@ class WalletService:
         row = result.one()
         outstanding = float(row.total_reserved) - float(row.total_released)
         return max(0, outstanding)
+
+    async def _find_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> WalletEvent | None:
+        """Look up a WalletEvent by its idempotency key."""
+        result = await self.session.execute(
+            select(WalletEvent).where(
+                WalletEvent.idempotency_key == idempotency_key
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def _invalidate_cache(self, workflow_id: uuid.UUID) -> None:
         cache_key = f"{self.BALANCE_CACHE_PREFIX}{workflow_id}"

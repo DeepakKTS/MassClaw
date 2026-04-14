@@ -5,19 +5,20 @@ services:
     image: pgvector/pgvector:pg16
     container_name: massclaw-postgres
     environment:
-      POSTGRES_USER: massclaw
-      POSTGRES_PASSWORD: massclaw
-      POSTGRES_DB: massclaw
+      POSTGRES_USER: ${POSTGRES_USER:-massclaw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-massclaw}
+      POSTGRES_DB: ${POSTGRES_DB:-massclaw}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U massclaw"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-massclaw}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - massclaw-network
 
@@ -35,6 +36,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - massclaw-network
 
@@ -46,18 +48,20 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres:5432/massclaw
-      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres:5432/massclaw
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-massclaw}:${POSTGRES_PASSWORD:-massclaw}@postgres:5432/${POSTGRES_DB:-massclaw}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-massclaw}:${POSTGRES_PASSWORD:-massclaw}@postgres:5432/${POSTGRES_DB:-massclaw}
       REDIS_URL: redis://redis:6379
       CELERY_BROKER_URL: redis://redis:6379/3
       CELERY_RESULT_BACKEND: redis://redis:6379/3
-      LOG_LEVEL: INFO
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - massclaw-network
 
@@ -68,16 +72,18 @@ services:
     container_name: massclaw-celery-worker
     command: celery -A app.workers.celery_app worker -l info -Q health,trust,memory,workflow,audit
     environment:
-      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres:5432/massclaw
-      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres:5432/massclaw
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-massclaw}:${POSTGRES_PASSWORD:-massclaw}@postgres:5432/${POSTGRES_DB:-massclaw}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-massclaw}:${POSTGRES_PASSWORD:-massclaw}@postgres:5432/${POSTGRES_DB:-massclaw}
       REDIS_URL: redis://redis:6379
       CELERY_BROKER_URL: redis://redis:6379/3
       CELERY_RESULT_BACKEND: redis://redis:6379/3
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - massclaw-network
 
@@ -88,16 +94,18 @@ services:
     container_name: massclaw-celery-beat
     command: celery -A app.workers.celery_app beat -l info
     environment:
-      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres:5432/massclaw
-      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres:5432/massclaw
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-massclaw}:${POSTGRES_PASSWORD:-massclaw}@postgres:5432/${POSTGRES_DB:-massclaw}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-massclaw}:${POSTGRES_PASSWORD:-massclaw}@postgres:5432/${POSTGRES_DB:-massclaw}
       REDIS_URL: redis://redis:6379
       CELERY_BROKER_URL: redis://redis:6379/3
       CELERY_RESULT_BACKEND: redis://redis:6379/3
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - massclaw-network
 
@@ -108,8 +116,17 @@ services:
     container_name: massclaw-frontend
     ports:
       - "3000:3000"
+    environment:
+      BACKEND_URL: ${BACKEND_URL:-http://backend:8000}
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
     networks:
       - massclaw-network
 

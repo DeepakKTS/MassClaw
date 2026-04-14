@@ -4,6 +4,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import anthropic
+import httpx
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.config import get_settings
 from app.core.logging import get_logger
@@ -24,7 +31,11 @@ class AnthropicProvider(LLMProvider):
         settings = get_settings()
         if not settings.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY is required for Anthropic provider")
-        self.client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self.client = anthropic.AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0),
+        )
+        self._max_retries = settings.llm_max_retries
 
     def default_model(self) -> str:
         return self.DEFAULT_MODEL
@@ -60,7 +71,7 @@ class AnthropicProvider(LLMProvider):
         if tools:
             kwargs["tools"] = self._format_tools(tools)
 
-        response = await self.client.messages.create(**kwargs)
+        response = await self._call_with_retry(**kwargs)
 
         latency_ms = self._elapsed_ms(start)
 
@@ -110,6 +121,36 @@ class AnthropicProvider(LLMProvider):
 
         return result
 
+    async def _call_with_retry(self, **kwargs: Any) -> Any:
+        """Call the Anthropic API with retry logic."""
+
+        @retry(
+            retry=retry_if_exception_type(
+                (
+                    anthropic.RateLimitError,
+                    anthropic.APITimeoutError,
+                    anthropic.APIConnectionError,
+                )
+            ),
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_exponential(multiplier=1, min=1, max=30),
+            before_sleep=lambda retry_state: logger.warning(
+                "anthropic_api_retry",
+                attempt=retry_state.attempt_number,
+                wait_seconds=round(retry_state.next_action.sleep, 1)  # type: ignore[union-attr]
+                if retry_state.next_action
+                else 0,
+                error=str(retry_state.outcome.exception())
+                if retry_state.outcome
+                else "unknown",
+            ),
+            reraise=True,
+        )
+        async def _do_call() -> Any:
+            return await self.client.messages.create(**kwargs)
+
+        return await _do_call()
+
     async def stream(
         self,
         prompt: str,
@@ -130,15 +171,32 @@ class AnthropicProvider(LLMProvider):
         if system:
             kwargs["system"] = system
 
-        async with self.client.messages.stream(**kwargs) as stream:
-            async for text in stream.text_stream:
-                yield LLMChunk(content=text)
+        try:
+            async with self.client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    yield LLMChunk(content=text)
 
-            # Final chunk with complete metadata
-            response = await stream.get_final_message()
+                # Final chunk with complete metadata
+                await stream.get_final_message()
+                yield LLMChunk(
+                    content="",
+                    is_final=True,
+                )
+        except (
+            anthropic.APIError,
+            anthropic.APIConnectionError,
+            anthropic.APITimeoutError,
+        ) as exc:
+            logger.error(
+                "anthropic_stream_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                model=model,
+            )
             yield LLMChunk(
                 content="",
                 is_final=True,
+                error=f"Anthropic stream failed: {type(exc).__name__}: {exc}",
             )
 
     @staticmethod

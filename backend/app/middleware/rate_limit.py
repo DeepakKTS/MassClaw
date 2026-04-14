@@ -64,9 +64,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     headers={"Retry-After": str(retry_after)},
                 )
 
-        except Exception:
-            # If Redis is down, allow the request through (fail-open)
-            pass
+        except Exception as e:
+            from app.core.logging import get_logger
+            _logger = get_logger(__name__)
+            _logger.error("rate_limit_redis_error", error=str(e))
+
+            if not settings.rate_limit_fail_open:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error_code": "SERVICE_UNAVAILABLE",
+                        "detail": "Rate limiting service unavailable. Please retry later.",
+                    },
+                )
 
         response = await call_next(request)
 

@@ -4,6 +4,14 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.llm.base import LLMChunk, LLMProvider, LLMResponse, ToolCall
@@ -24,9 +32,14 @@ class OpenAIProvider(LLMProvider):
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required for OpenAI provider")
 
-        from openai import AsyncOpenAI
+        import openai
 
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._openai = openai
+        self.client = openai.AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0),
+        )
+        self._max_retries = settings.llm_max_retries
 
     def default_model(self) -> str:
         return self.DEFAULT_MODEL
@@ -70,7 +83,7 @@ class OpenAIProvider(LLMProvider):
         if tools:
             kwargs["tools"] = self._format_tools(tools)
 
-        response = await self.client.chat.completions.create(**kwargs)
+        response = await self._call_with_retry(**kwargs)
 
         latency_ms = self._elapsed_ms(start)
         choice = response.choices[0]
@@ -79,11 +92,20 @@ class OpenAIProvider(LLMProvider):
         tool_calls: list[ToolCall] = []
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "openai_tool_call_json_parse_error",
+                        tool_name=tc.function.name,
+                        raw_arguments=tc.function.arguments,
+                    )
+                    arguments = {}
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=json.loads(tc.function.arguments),
+                        arguments=arguments,
                     )
                 )
 
@@ -114,6 +136,36 @@ class OpenAIProvider(LLMProvider):
 
         return result
 
+    async def _call_with_retry(self, **kwargs: Any) -> Any:
+        """Call the OpenAI API with retry logic."""
+
+        @retry(
+            retry=retry_if_exception_type(
+                (
+                    self._openai.RateLimitError,
+                    self._openai.APITimeoutError,
+                    self._openai.APIConnectionError,
+                )
+            ),
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_exponential(multiplier=1, min=1, max=30),
+            before_sleep=lambda retry_state: logger.warning(
+                "openai_api_retry",
+                attempt=retry_state.attempt_number,
+                wait_seconds=round(retry_state.next_action.sleep, 1)  # type: ignore[union-attr]
+                if retry_state.next_action
+                else 0,
+                error=str(retry_state.outcome.exception())
+                if retry_state.outcome
+                else "unknown",
+            ),
+            reraise=True,
+        )
+        async def _do_call() -> Any:
+            return await self.client.chat.completions.create(**kwargs)
+
+        return await _do_call()
+
     async def stream(
         self,
         prompt: str,
@@ -130,19 +182,36 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        stream = await self.client.chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=messages,
-            stream=True,
-        )
+        try:
+            stream = await self.client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=messages,
+                stream=True,
+            )
 
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield LLMChunk(content=chunk.choices[0].delta.content)
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield LLMChunk(content=chunk.choices[0].delta.content)
 
-        yield LLMChunk(content="", is_final=True)
+            yield LLMChunk(content="", is_final=True)
+        except (
+            self._openai.APIError,
+            self._openai.APIConnectionError,
+            self._openai.APITimeoutError,
+        ) as exc:
+            logger.error(
+                "openai_stream_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                model=model,
+            )
+            yield LLMChunk(
+                content="",
+                is_final=True,
+                error=f"OpenAI stream failed: {type(exc).__name__}: {exc}",
+            )
 
     @staticmethod
     def _format_tools(tools: list[dict]) -> list[dict]:

@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/DeepakKTS/MassClaw/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build" /></a>
-  <a href="https://github.com/DeepakKTS/MassClaw/releases"><img src="https://img.shields.io/badge/release-v3.1-blue?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/DeepakKTS/MassClaw/releases"><img src="https://img.shields.io/badge/release-v1.0.0-blue?style=flat-square" alt="Release" /></a>
   <a href="https://github.com/DeepakKTS/MassClaw/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square&logo=python&logoColor=white" alt="Python" /></a>
   <a href="https://github.com/DeepakKTS/MassClaw"><img src="https://img.shields.io/github/stars/DeepakKTS/MassClaw?style=flat-square&color=yellow" alt="Stars" /></a>

@@ -48,10 +48,20 @@ class ModelRouter:
                 logger.warning("llm_provider_failed", provider="openai", error=str(e))
 
         if not self._providers:
+            if settings.auth_required:
+                raise RuntimeError(
+                    "FATAL: No LLM providers available. "
+                    "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY when AUTH_REQUIRED=true. "
+                    "Mock provider is only allowed in development mode (AUTH_REQUIRED=false)."
+                )
             from app.llm.mock import MockProvider
 
             self._providers["mock"] = MockProvider()
-            logger.info("llm_provider_initialized", provider="mock", reason="no_api_keys_configured")
+            logger.warning(
+                "llm_mock_provider_activated",
+                reason="no_api_keys_configured",
+                warning="Mock provider returns fake data. Not suitable for production.",
+            )
 
     def _resolve_provider(self, model: str | None = None) -> tuple[LLMProvider, str]:
         """Resolve which provider and model to use.

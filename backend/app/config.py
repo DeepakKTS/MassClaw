@@ -31,11 +31,15 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-production-use-a-secure-random-string"
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 60
-    auth_required: bool = False  # Set to True in production to enforce auth on write endpoints
+    auth_required: bool = True  # Set to False in local development to skip auth
 
     # LLM Providers
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+
+    # LLM Resilience
+    llm_timeout_seconds: int = 60
+    llm_max_retries: int = 3
 
     # Embedding Model
     embedding_model: str = "all-MiniLM-L6-v2"
@@ -94,10 +98,22 @@ class Settings(BaseSettings):
     memory_freshness_decay_lambda: float = 0.01
     memory_min_similarity_threshold: float = 0.5
 
+    # Rate Limit Behavior
+    rate_limit_fail_open: bool = False  # When True, allow requests if Redis is down
+
     # Application
     app_name: str = "MassClaw"
-    app_version: str = "0.1.0"
+    app_version: str = "1.0.0"
     debug: bool = False
+
+    def validate_production_settings(self) -> None:
+        """Validate settings for production safety. Called during app startup."""
+        _INSECURE_JWT_DEFAULT = "change-me-in-production-use-a-secure-random-string"
+        if self.auth_required and self.jwt_secret_key == _INSECURE_JWT_DEFAULT:
+            raise RuntimeError(
+                "FATAL: JWT_SECRET_KEY must be set to a secure value when AUTH_REQUIRED=true. "
+                "Generate one with: openssl rand -hex 32"
+            )
 
 
 @lru_cache

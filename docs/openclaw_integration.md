@@ -26,7 +26,7 @@ https://your-deployment.example.com  (production)
 
 MassClaw supports optional authentication via JWT tokens or API keys.
 
-**For hackathon/demo mode**, all endpoints are accessible without authentication.
+**For local development** (`AUTH_REQUIRED=false`), all endpoints are accessible without authentication.
 
 **For production**, set `AUTH_REQUIRED=true` in environment and use:
 ```
@@ -202,7 +202,7 @@ caps = requests.get(f"{BASE}/capabilities").json()
 print(f"Available: {caps['capabilities']}")
 
 # 2. Submit
-resp = requests.post(f"{BASE}/tasks/submit", json={
+resp = requests.post(f"{BASE}/workflows/submit", json={
     "instruction": "Research the impact of AI on radiology workflows",
     "budget": 400
 })

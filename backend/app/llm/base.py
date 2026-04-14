@@ -26,6 +26,7 @@ class LLMChunk:
     content: str = ""
     is_final: bool = False
     tool_calls: list[ToolCall] | None = None
+    error: str | None = None
 
 
 @dataclass

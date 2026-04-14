@@ -6,7 +6,9 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
+    String,
     Text,
     text,
 )
@@ -59,6 +61,9 @@ class WalletEvent(Base):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("now()"),
@@ -68,6 +73,14 @@ class WalletEvent(Base):
 
     # Relationships
     workflow: Mapped[Workflow] = relationship(back_populates="wallet_events")
+
+    __table_args__ = (
+        Index(
+            "ix_wallet_events_workflow_action",
+            "workflow_id",
+            "action_type",
+        ),
+    )
 
     def __repr__(self) -> str:
         return f"<WalletEvent(type={self.action_type}, delta={self.credit_delta})>"

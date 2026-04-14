@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Shield, Crown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { TrustLeaderboardEntry } from "@/types/trust";
 
 const RANK_STYLES: Record<number, string> = {
   1: "text-amber-400",
@@ -12,9 +13,9 @@ const RANK_STYLES: Record<number, string> = {
 };
 
 export default function TrustPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["trust-leaderboard"],
-    queryFn: () => api.get<any[]>("/trust/leaderboard/ranked?limit=20"),
+    queryFn: () => api.get<TrustLeaderboardEntry[]>("/trust/leaderboard/ranked?limit=20"),
   });
 
   return (
@@ -23,6 +24,12 @@ export default function TrustPage() {
         <h1 className="text-heading">Trust Leaderboard</h1>
         <p className="text-massclaw-text-muted mt-1 text-sm">Agents ranked by Bayesian trust score</p>
       </div>
+
+      {error && (
+        <div className="glass rounded-xl p-4 border border-massclaw-danger/20 text-massclaw-danger text-sm">
+          Failed to load trust leaderboard: {error.message}
+        </div>
+      )}
 
       <div className="glass rounded-xl overflow-hidden">
         <table className="w-full text-sm">
@@ -38,7 +45,7 @@ export default function TrustPage() {
           <tbody>
             {isLoading ? (
               <tr><td colSpan={5} className="p-4 text-massclaw-text-muted">Loading...</td></tr>
-            ) : data?.map((agent: any) => (
+            ) : data?.map((agent: TrustLeaderboardEntry) => (
               <tr key={agent.agent_id} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
                 <td className="p-4">
                   <span className={cn("font-bold", RANK_STYLES[agent.rank])}>

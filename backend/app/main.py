@@ -28,6 +28,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
 
     logger.info("starting_massclaw", version=settings.app_version)
 
+    # Validate production safety constraints
+    settings.validate_production_settings()
+
     # Initialize database
     engine = init_db()
     logger.info("database_initialized", url=settings.database_url.split("@")[-1])

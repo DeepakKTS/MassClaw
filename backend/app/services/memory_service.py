@@ -434,8 +434,8 @@ class MemoryService:
             if cached:
                 data = json.loads(cached)
                 return [MemorySearchResult.model_validate(item) for item in data]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("memory_cache_read_error", error=str(e))
         return None
 
     async def _set_cached(self, cache_key: str, results: list[MemorySearchResult]) -> None:
@@ -447,8 +447,8 @@ class MemoryService:
                 json.dumps(data, default=str),
                 ex=self.CACHE_TTL_SECONDS,
             )
-        except Exception:
-            pass  # Cache failures are non-critical
+        except Exception as e:
+            logger.warning("memory_cache_write_error", error=str(e))
 
     async def _invalidate_cache(self, workflow_id: uuid.UUID) -> None:
         """Invalidate all cached queries. Uses prefix scan for targeted invalidation."""
@@ -462,5 +462,5 @@ class MemoryService:
                     await self.redis.delete(*keys)
                 if cursor == 0:
                     break
-        except Exception:
-            pass  # Cache invalidation failures are non-critical
+        except Exception as e:
+            logger.warning("memory_cache_invalidate_error", error=str(e))

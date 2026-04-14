@@ -92,9 +92,13 @@ async def get_api_key_agent(
     from sqlalchemy import select
     from app.models.agent import Agent
 
-    # API keys would be stored hashed in agent.metadata_.api_key_hash
-    # For now, look up by the key prefix pattern
-    result = await session.execute(select(Agent))
+    # Only load agents that actually have an api_key_hash in their metadata,
+    # rather than loading ALL agents and iterating in Python (O(N) scan).
+    result = await session.execute(
+        select(Agent).where(
+            Agent.metadata_["api_key_hash"].as_string().isnot(None)
+        )
+    )
     agents = result.scalars().all()
 
     for agent in agents:
@@ -113,17 +117,18 @@ async def require_auth_if_enabled(
         HTTPAuthorizationCredentials | None, Depends(_optional_bearer)
     ] = None,
     x_api_key: Annotated[str | None, Header()] = None,
+    session: AsyncSession = Depends(get_db_session),
 ) -> TokenPayload | None:
     """Enforce authentication on write endpoints when AUTH_REQUIRED=true.
 
-    In demo/hackathon mode (AUTH_REQUIRED=false), allows unauthenticated access.
-    In production mode (AUTH_REQUIRED=true), requires either JWT or API key.
+    When AUTH_REQUIRED=false (local development), allows unauthenticated access.
+    When AUTH_REQUIRED=true, requires either a valid JWT or a verified API key.
     """
     from app.config import get_settings
     settings = get_settings()
 
     if not settings.auth_required:
-        # Demo mode — allow unauthenticated access
+        # Development mode — allow unauthenticated access
         if credentials:
             try:
                 return decode_token(credentials.credentials)
@@ -135,9 +140,25 @@ async def require_auth_if_enabled(
     if credentials:
         return decode_token(credentials.credentials)
     if x_api_key:
-        # API key provided — validate it (returns agent_id or raises)
-        # For now, accept any non-empty key in production to allow external agents
-        return TokenPayload(sub=f"apikey:{x_api_key[:8]}", scopes=["read", "write"])
+        # Validate API key against agent registry — only load agents with keys
+        from sqlalchemy import select
+        from app.models.agent import Agent
+
+        result = await session.execute(
+            select(Agent).where(
+                Agent.metadata_["api_key_hash"].as_string().isnot(None)
+            )
+        )
+        agents = result.scalars().all()
+
+        for agent in agents:
+            stored_hash = (agent.metadata_ or {}).get("api_key_hash")
+            if stored_hash and verify_api_key(x_api_key, stored_hash):
+                return TokenPayload(
+                    sub=f"agent:{agent.agent_id}",
+                    scopes=["read", "write"],
+                )
+        raise AuthenticationError("Invalid API key")
 
     raise AuthenticationError(
         "Authentication required. Provide Authorization: Bearer <token> or X-API-Key header."

@@ -2,11 +2,13 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import type { AuditLogEntry } from "@/types/audit";
+import type { PaginatedResponse } from "@/types/common";
 
 export default function AuditPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["audit-search"],
-    queryFn: () => api.get<any>("/audit/search?page_size=50"),
+    queryFn: () => api.get<PaginatedResponse<AuditLogEntry>>("/audit/search?page_size=50"),
   });
 
   return (
@@ -16,6 +18,12 @@ export default function AuditPage() {
         <p className="text-massclaw-text-muted mt-1 text-sm">Complete decision log across the system</p>
       </div>
 
+      {error && (
+        <div className="glass rounded-xl p-4 border border-massclaw-danger/20 text-massclaw-danger text-sm">
+          Failed to load audit log: {error.message}
+        </div>
+      )}
+
       <div className="glass rounded-xl overflow-hidden font-mono">
         <div className="p-4 border-b border-white/[0.06] flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -24,7 +32,7 @@ export default function AuditPage() {
         <div className="divide-y divide-white/[0.04]">
           {isLoading ? (
             <div className="p-4 text-massclaw-text-muted text-sm">Loading...</div>
-          ) : data?.items?.map((log: any) => (
+          ) : data?.items?.map((log: AuditLogEntry) => (
             <div key={log.log_id} className="px-4 py-3 hover:bg-white/[0.02] transition-colors text-xs">
               <div className="flex items-center gap-3">
                 <span className="text-massclaw-text-muted whitespace-nowrap">
@@ -35,7 +43,7 @@ export default function AuditPage() {
                 </span>
                 <span className="text-massclaw-text-muted">{log.actor_id}</span>
                 <span className="text-massclaw-text truncate flex-1">
-                  {log.input_summary || log.output_summary || "—"}
+                  {log.input_summary || log.output_summary || "\u2014"}
                 </span>
               </div>
             </div>

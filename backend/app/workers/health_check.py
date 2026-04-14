@@ -41,101 +41,106 @@ async def run_health_checks() -> dict:
         Summary dict: {"checked": N, "healthy": N, "degraded": N, "suspended": N}
     """
     settings = get_settings()
-    init_db()
-    await init_redis()
+    logger.info("health_check_started")
+    try:
+        init_db()
+        await init_redis()
 
-    summary = {"checked": 0, "healthy": 0, "degraded": 0, "suspended": 0}
+        summary = {"checked": 0, "healthy": 0, "degraded": 0, "suspended": 0}
 
-    async with db_session_context() as session:
-        redis = get_redis_manager().get_cache_client()
+        async with db_session_context() as session:
+            redis = get_redis_manager().get_cache_client()
 
-        # Fetch all agents that are active or degraded and have a health check URL
-        result = await session.execute(
-            select(Agent).where(
-                Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]),
-                Agent.health_check_url.isnot(None),
+            # Fetch all agents that are active or degraded and have a health check URL
+            result = await session.execute(
+                select(Agent).where(
+                    Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]),
+                    Agent.health_check_url.isnot(None),
+                )
             )
-        )
-        agents = list(result.scalars().all())
+            agents = list(result.scalars().all())
 
-        timeout = settings.health_check_timeout_seconds
-        degraded_threshold = settings.health_check_degraded_threshold
-        suspended_threshold = settings.health_check_suspended_threshold
+            timeout = settings.health_check_timeout_seconds
+            degraded_threshold = settings.health_check_degraded_threshold
+            suspended_threshold = settings.health_check_suspended_threshold
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for agent in agents:
-                summary["checked"] += 1
-                failure_key = f"{REDIS_FAILURE_KEY_PREFIX}{agent.agent_id}"
-                old_status = agent.status
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                for agent in agents:
+                    summary["checked"] += 1
+                    failure_key = f"{REDIS_FAILURE_KEY_PREFIX}{agent.agent_id}"
+                    old_status = agent.status
 
-                healthy = await _check_agent_health(client, agent.health_check_url)
+                    healthy = await _check_agent_health(client, agent.health_check_url)
 
-                now = datetime.now(timezone.utc)
+                    now = datetime.now(timezone.utc)
 
-                if healthy:
-                    # Reset failure counter on success
-                    await redis.delete(failure_key)
+                    if healthy:
+                        # Reset failure counter on success
+                        await redis.delete(failure_key)
 
-                    # Recovery: degraded -> active
-                    if agent.status == AgentStatus.DEGRADED:
-                        agent.status = AgentStatus.ACTIVE
-                        await _publish_health_event(
-                            agent, old_status, AgentStatus.ACTIVE, healthy=True
-                        )
-                        logger.info(
-                            "agent_health_recovered",
-                            agent_id=str(agent.agent_id),
-                            agent_name=agent.name,
-                        )
-
-                    summary["healthy"] += 1
-                else:
-                    # Increment failure counter
-                    failures = await redis.incr(failure_key)
-                    # Set a TTL so stale keys don't accumulate (24h)
-                    await redis.expire(failure_key, 86400)
-
-                    if failures >= suspended_threshold and agent.status != AgentStatus.SUSPENDED:
-                        # Suspend the agent
-                        agent.status = AgentStatus.SUSPENDED
-                        await _publish_health_event(
-                            agent, old_status, AgentStatus.SUSPENDED, healthy=False
-                        )
-                        summary["suspended"] += 1
-                        logger.warning(
-                            "agent_health_suspended",
-                            agent_id=str(agent.agent_id),
-                            agent_name=agent.name,
-                            consecutive_failures=failures,
-                        )
-                    elif failures >= degraded_threshold and agent.status == AgentStatus.ACTIVE:
-                        # Degrade the agent
-                        agent.status = AgentStatus.DEGRADED
-                        await _publish_health_event(
-                            agent, old_status, AgentStatus.DEGRADED, healthy=False
-                        )
-                        summary["degraded"] += 1
-                        logger.warning(
-                            "agent_health_degraded",
-                            agent_id=str(agent.agent_id),
-                            agent_name=agent.name,
-                            consecutive_failures=failures,
-                        )
-                    else:
-                        # Still within tolerance or already in the correct degraded state
+                        # Recovery: degraded -> active
                         if agent.status == AgentStatus.DEGRADED:
+                            agent.status = AgentStatus.ACTIVE
+                            await _publish_health_event(
+                                agent, old_status, AgentStatus.ACTIVE, healthy=True
+                            )
+                            logger.info(
+                                "agent_health_recovered",
+                                agent_id=str(agent.agent_id),
+                                agent_name=agent.name,
+                            )
+
+                        summary["healthy"] += 1
+                    else:
+                        # Increment failure counter
+                        failures = await redis.incr(failure_key)
+                        # Set a TTL so stale keys don't accumulate (24h)
+                        await redis.expire(failure_key, 86400)
+
+                        if failures >= suspended_threshold and agent.status != AgentStatus.SUSPENDED:
+                            # Suspend the agent
+                            agent.status = AgentStatus.SUSPENDED
+                            await _publish_health_event(
+                                agent, old_status, AgentStatus.SUSPENDED, healthy=False
+                            )
+                            summary["suspended"] += 1
+                            logger.warning(
+                                "agent_health_suspended",
+                                agent_id=str(agent.agent_id),
+                                agent_name=agent.name,
+                                consecutive_failures=failures,
+                            )
+                        elif failures >= degraded_threshold and agent.status == AgentStatus.ACTIVE:
+                            # Degrade the agent
+                            agent.status = AgentStatus.DEGRADED
+                            await _publish_health_event(
+                                agent, old_status, AgentStatus.DEGRADED, healthy=False
+                            )
                             summary["degraded"] += 1
+                            logger.warning(
+                                "agent_health_degraded",
+                                agent_id=str(agent.agent_id),
+                                agent_name=agent.name,
+                                consecutive_failures=failures,
+                            )
                         else:
-                            summary["healthy"] += 1
+                            # Still within tolerance or already in the correct degraded state
+                            if agent.status == AgentStatus.DEGRADED:
+                                summary["degraded"] += 1
+                            else:
+                                summary["healthy"] += 1
 
-                # Update last_health_check timestamp
-                agent.last_health_check = now
+                    # Update last_health_check timestamp
+                    agent.last_health_check = now
 
-        # Flush all changes
-        await session.flush()
+            # Flush all changes
+            await session.flush()
 
-    logger.info("health_check_complete", **summary)
-    return summary
+        logger.info("health_check_complete", **summary)
+        return summary
+    except Exception:
+        logger.exception("health_check_failed")
+        raise
 
 
 async def _check_agent_health(client: httpx.AsyncClient, url: str) -> bool:

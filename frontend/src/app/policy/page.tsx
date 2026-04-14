@@ -3,14 +3,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { ShieldCheck, ShieldAlert, ShieldOff } from "lucide-react";
+import type { PolicyRule } from "@/types/policy";
+import type { PaginatedResponse } from "@/types/common";
 
 export default function PolicyPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["policy-rules"],
-    queryFn: () => api.get<any>("/policy/rules"),
+    queryFn: () => api.get<PaginatedResponse<PolicyRule> | PolicyRule[]>("/policy/rules"),
   });
 
-  const rules = data?.items || data || [];
+  const rules: PolicyRule[] = Array.isArray(data)
+    ? data
+    : (data as PaginatedResponse<PolicyRule> | undefined)?.items ?? [];
 
   const actionIcon = (action: string) => {
     if (action === "deny") return <ShieldOff size={16} className="text-red-400" />;
@@ -25,11 +29,17 @@ export default function PolicyPage() {
         <p className="text-massclaw-text-muted mt-1 text-sm">Safety and governance rule management</p>
       </div>
 
+      {error && (
+        <div className="glass rounded-xl p-4 border border-massclaw-danger/20 text-massclaw-danger text-sm">
+          Failed to load policy rules: {error.message}
+        </div>
+      )}
+
       <div className="space-y-3">
         {isLoading ? (
           <div className="text-massclaw-text-muted text-sm">Loading...</div>
-        ) : Array.isArray(rules) && rules.length > 0 ? (
-          rules.map((rule: any) => (
+        ) : rules.length > 0 ? (
+          rules.map((rule: PolicyRule) => (
             <div key={rule.rule_id} className="glass rounded-xl p-4 hover:bg-white/[0.03] transition-all">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">

@@ -15,14 +15,19 @@ async def run_trust_decay() -> int:
     from app.core.database import db_session_context, init_db
     from app.core.redis import get_redis_manager, init_redis
 
-    init_db()
-    await init_redis()
+    logger.info("trust_decay_started")
+    try:
+        init_db()
+        await init_redis()
 
-    async with db_session_context() as session:
-        redis = get_redis_manager().get_cache_client()
-        from app.services.trust_service import TrustService
+        async with db_session_context() as session:
+            redis = get_redis_manager().get_cache_client()
+            from app.services.trust_service import TrustService
 
-        service = TrustService(session, redis)
-        decayed = await service.decay_all_scores()
-        logger.info("trust_decay_complete", decayed_agents=decayed)
-        return decayed
+            service = TrustService(session, redis)
+            decayed = await service.decay_all_scores()
+            logger.info("trust_decay_complete", decayed_agents=decayed)
+            return decayed
+    except Exception:
+        logger.exception("trust_decay_failed")
+        raise

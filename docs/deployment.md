@@ -27,7 +27,7 @@ Copy `.env.example` to `backend/.env` and configure:
 | `CORS_ORIGINS` | No | `["http://localhost:3000"]` | Allowed CORS origins |
 | `RATE_LIMIT_REQUESTS` | No | `100` | Requests per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | `60` | Rate limit window |
-| `AUTH_REQUIRED` | No | `false` | Enforce authentication on write endpoints |
+| `AUTH_REQUIRED` | No | `true` | Authentication enforced by default. Set `false` for local dev. |
 
 ## Local Development
 
@@ -85,7 +85,7 @@ MassClaw is designed for NEST-like deployment:
 3. Set environment variables
 4. Deploy backend container
 5. Run `alembic upgrade head` on first deploy
-6. Run `python scripts/seed_agents.py` for demo data
+6. Run `python scripts/seed_agents.py` to create development seed agents
 
 ### Startup consideration
 The embedding model (`all-MiniLM-L6-v2`, ~90MB) downloads on first startup. For faster cold starts, pre-download into the Docker image or mount a volume with the cached model at `~/.cache/torch/sentence_transformers/`.
@@ -102,4 +102,4 @@ celery -A app.workers.celery_app worker --loglevel=info -Q health,trust,memory,w
 celery -A app.workers.celery_app beat --loglevel=info
 ```
 
-These are optional for demo/hackathon but recommended for production.
+These are required for production deployments.

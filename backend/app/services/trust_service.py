@@ -7,6 +7,7 @@ from statistics import mean, stdev
 
 import redis.asyncio as aioredis
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -70,10 +71,24 @@ class TrustService:
         3. Clamp to [TRUST_FLOOR, TRUST_CEILING]
         4. Persist event and update agent
         """
-        # Fetch agent
-        result = await self.session.execute(
-            select(Agent).where(Agent.agent_id == agent_id)
-        )
+        # Fetch agent with row-level lock to prevent concurrent trust score
+        # overwrites (two concurrent calls for the same agent would otherwise
+        # read the same old_trust, compute independently, and the last writer
+        # would silently discard the other's update).
+        try:
+            result = await self.session.execute(
+                select(Agent)
+                .where(Agent.agent_id == agent_id)
+                .with_for_update()
+            )
+        except OperationalError:
+            logger.error(
+                "trust_update_lock_failed",
+                agent_id=str(agent_id),
+                error="Could not acquire row lock (possible deadlock)",
+            )
+            raise
+
         agent = result.scalar_one_or_none()
         if agent is None:
             raise NotFoundError("Agent", str(agent_id))
@@ -353,11 +368,14 @@ class TrustService:
         decay_interval_hours = self.settings.trust_decay_interval_hours
         decayed_count = 0
 
-        # Find active agents
+        # Find active agents with skip_locked so batch decay doesn't block
+        # individual trust updates that are holding a row lock.
         result = await self.session.execute(
-            select(Agent).where(
+            select(Agent)
+            .where(
                 Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED])
             )
+            .with_for_update(skip_locked=True)
         )
         agents = result.scalars().all()
 

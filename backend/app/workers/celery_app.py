@@ -48,25 +48,57 @@ celery_app.conf.update(
 # Define tasks as sync wrappers around async functions
 import asyncio
 
-@celery_app.task(name="app.workers.celery_app.health_check_all")
+@celery_app.task(
+    name="app.workers.celery_app.health_check_all",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    max_retries=3,
+    retry_jitter=True,
+    acks_late=True,
+)
 def health_check_all():
     """Run health checks on all agents."""
     from app.workers.health_check import run_health_checks
     return asyncio.run(run_health_checks())
 
-@celery_app.task(name="app.workers.celery_app.decay_trust_scores")
+@celery_app.task(
+    name="app.workers.celery_app.decay_trust_scores",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    max_retries=3,
+    retry_jitter=True,
+    acks_late=True,
+)
 def decay_trust_scores():
     """Decay trust scores for inactive agents."""
     from app.workers.trust_decay import run_trust_decay
     return asyncio.run(run_trust_decay())
 
-@celery_app.task(name="app.workers.celery_app.garbage_collect_memory")
+@celery_app.task(
+    name="app.workers.celery_app.garbage_collect_memory",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    max_retries=3,
+    retry_jitter=True,
+    acks_late=True,
+)
 def garbage_collect_memory():
     """Garbage collect expired/low-quality memory records."""
     from app.workers.memory_gc import run_memory_gc
     return asyncio.run(run_memory_gc())
 
-@celery_app.task(name="app.workers.celery_app.recalculate_scores")
+@celery_app.task(
+    name="app.workers.celery_app.recalculate_scores",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    max_retries=3,
+    retry_jitter=True,
+    acks_late=True,
+)
 def recalculate_scores():
     """Recalculate agent scores and run promotion/demotion."""
     from app.workers.score_update import run_score_recalculation

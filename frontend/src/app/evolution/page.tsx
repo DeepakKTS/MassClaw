@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Trophy, Crown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { EvolutionRanking } from "@/types/evolution";
 
 const RANK_STYLES: Record<number, string> = {
   1: "text-amber-400",
@@ -12,9 +13,9 @@ const RANK_STYLES: Record<number, string> = {
 };
 
 export default function EvolutionPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["evolution-rankings"],
-    queryFn: () => api.get<any[]>("/evolution/rankings/leaderboard?limit=20"),
+    queryFn: () => api.get<EvolutionRanking[]>("/evolution/rankings/leaderboard?limit=20"),
   });
 
   return (
@@ -23,6 +24,12 @@ export default function EvolutionPage() {
         <h1 className="text-heading">Evolution Rankings</h1>
         <p className="text-massclaw-text-muted mt-1 text-sm">Agent performance rankings by composite score</p>
       </div>
+
+      {error && (
+        <div className="glass rounded-xl p-4 border border-massclaw-danger/20 text-massclaw-danger text-sm">
+          Failed to load evolution rankings: {error.message}
+        </div>
+      )}
 
       <div className="glass rounded-xl overflow-hidden">
         <table className="w-full text-sm">
@@ -38,7 +45,7 @@ export default function EvolutionPage() {
           <tbody>
             {isLoading ? (
               <tr><td colSpan={5} className="p-4 text-massclaw-text-muted">Loading...</td></tr>
-            ) : data?.map((a: any) => (
+            ) : data?.map((a: EvolutionRanking) => (
               <tr key={a.agent_id} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
                 <td className="p-4">
                   <span className={cn("font-bold", RANK_STYLES[a.rank])}>
