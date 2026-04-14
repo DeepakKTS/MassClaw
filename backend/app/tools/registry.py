@@ -44,7 +44,11 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def get_tools_for_capabilities(self, capabilities: list[str]) -> list[ToolProvider]:
-        """Return tools accessible by an agent with the given capabilities."""
+        """Return tools accessible by an agent with the given capabilities.
+
+        Returns an empty list if *capabilities* is empty — agents with no
+        capabilities get no tool access.
+        """
         cap_set = set(capabilities)
         return [t for t in self._tools.values() if t.required_capabilities & cap_set]
 

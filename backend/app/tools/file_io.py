@@ -12,6 +12,11 @@ _FILE_READ_CAP = 1 * 1024 * 1024  # 1 MB
 def _safe_resolve(workspace: str, relative_path: str) -> Path | None:
     """Resolve *relative_path* inside *workspace*, returning None if the resolved
     path escapes the workspace root (path-traversal guard)."""
+    # Reject null bytes, control characters, and excessively long paths
+    if "\x00" in relative_path or len(relative_path) > 1024:
+        return None
+    if any(ord(c) < 32 and c not in ("\n", "\r", "\t") for c in relative_path):
+        return None
     workspace_real = os.path.realpath(workspace)
     raw_path = os.path.join(workspace, relative_path)
     # Block symlinks — they could point outside the workspace
@@ -79,6 +84,16 @@ class FileReadTool(ToolProvider):
                 metadata={"size_bytes": size},
             )
 
+        # Detect binary files — check first 1024 bytes for null byte
+        with open(resolved, "rb") as bf:
+            chunk = bf.read(1024)
+            if b"\x00" in chunk:
+                return ToolResult(
+                    content=f"Error: file '{path_arg}' appears to be binary and cannot be read as text.",
+                    success=False,
+                    metadata={"path": path_arg, "binary": True},
+                )
+
         content = resolved.read_text(encoding="utf-8", errors="replace")
         return ToolResult(
             content=content,
@@ -123,7 +138,7 @@ class FileWriteTool(ToolProvider):
         if not path_arg:
             return ToolResult(content="Error: 'path' argument is required.", success=False)
 
-        content: str = arguments.get("content", "")
+        content: str = arguments.get("content") or ""
 
         resolved = _safe_resolve(context.workspace_path, path_arg)
         if resolved is None:
@@ -157,6 +172,11 @@ class FileListTool(ToolProvider):
                     "Relative path of the sub-directory to list. Defaults to the workspace root when omitted or empty."
                 ),
                 "default": "",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "If true, list all files recursively in subdirectories.",
+                "default": False,
             },
         },
         "required": [],
@@ -197,11 +217,21 @@ class FileListTool(ToolProvider):
             )
 
         workspace_real = Path(os.path.realpath(context.workspace_path))
+        recursive = bool(arguments.get("recursive", False))
         entries: list[str] = []
-        for entry in sorted(resolved.iterdir()):
-            rel = entry.relative_to(workspace_real)
-            suffix = "/" if entry.is_dir() else ""
-            entries.append(str(rel) + suffix)
+
+        if recursive:
+            for root, dirs, files in os.walk(resolved):
+                root_path = Path(root)
+                for d in sorted(dirs):
+                    entries.append(str((root_path / d).relative_to(workspace_real)) + "/")
+                for f in sorted(files):
+                    entries.append(str((root_path / f).relative_to(workspace_real)))
+        else:
+            for entry in sorted(resolved.iterdir()):
+                rel = entry.relative_to(workspace_real)
+                suffix = "/" if entry.is_dir() else ""
+                entries.append(str(rel) + suffix)
 
         if not entries:
             return ToolResult(

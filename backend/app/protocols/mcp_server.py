@@ -274,9 +274,14 @@ class MassClawMCPServer:
         from app.schemas.memory import MemoryQueryRequest
         from app.services.memory_service import MemoryService
 
+        try:
+            wf_id = uuid.UUID(args["workflow_id"]) if args.get("workflow_id") else None
+        except (ValueError, KeyError):
+            wf_id = None
+
         query_req = MemoryQueryRequest(
             query=args["query"],
-            workflow_id=uuid.UUID(args["workflow_id"]) if args.get("workflow_id") else None,
+            workflow_id=wf_id,
             top_k=int(args.get("top_k", 10)),
             min_similarity=float(args.get("min_similarity", 0.5)),
         )

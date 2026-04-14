@@ -95,6 +95,11 @@ class WebSearchTool(ToolProvider):
                 success=False,
             )
 
+        # Detect API error responses
+        if "error" in data or ("message" in data and "web" not in data):
+            error_msg = data.get("error", data.get("message", "Unknown API error"))
+            return ToolResult(content=f"Search API error: {error_msg}", success=False)
+
         web_results = data.get("web", {}).get("results", [])
         if not web_results:
             return ToolResult(
@@ -163,6 +168,19 @@ class WebScrapeTool(ToolProvider):
                     headers={"User-Agent": "MassClaw-Agent/1.0 (research scraper)"},
                 )
                 response.raise_for_status()
+
+                # Reject non-text content types (PDFs, images, binaries)
+                content_type = response.headers.get("content-type", "")
+                if content_type and not any(
+                    ct in content_type.lower()
+                    for ct in ("text/html", "text/plain", "application/json", "text/xml", "application/xml")
+                ):
+                    return ToolResult(
+                        content=f"URL returned non-text content ({content_type}). Only HTML/text/JSON/XML can be scraped.",
+                        success=False,
+                        metadata={"url": url, "content_type": content_type},
+                    )
+
                 raw_html = response.text
         except httpx.HTTPStatusError as exc:
             return ToolResult(

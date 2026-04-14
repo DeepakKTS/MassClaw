@@ -143,6 +143,23 @@ class APICallerTool(ToolProvider):
         body: dict[str, Any] | None = arguments.get("body")
         params: dict[str, str] | None = arguments.get("params")
 
+        # Pin DNS resolution to prevent rebinding attacks
+        try:
+            import socket
+            from urllib.parse import urlunparse
+
+            hostname = parsed.hostname
+            if hostname and hostname not in ("localhost", "127.0.0.1", "::1"):
+                resolved_addrs = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+                if resolved_addrs:
+                    pinned_ip = resolved_addrs[0][4][0]
+                    netloc = f"{pinned_ip}:{parsed.port}" if parsed.port else pinned_ip
+                    url = urlunparse(parsed._replace(netloc=netloc))
+                    if "Host" not in headers:
+                        headers["Host"] = hostname
+        except Exception:
+            pass  # Fall through to normal resolution
+
         try:
             async with httpx.AsyncClient(
                 timeout=_REQUEST_TIMEOUT,

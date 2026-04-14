@@ -327,6 +327,11 @@ class InjectionDetector:
         the weighted sum of matches divided by the maximum possible score
         (sum of all weights), clamped to [0, 1].
         """
+        import unicodedata
+
+        # Normalize unicode to prevent homoglyph-based bypass (e.g., Cyrillic lookalikes)
+        content = unicodedata.normalize("NFKC", content)
+
         matched_descriptions: list[str] = []
         weighted_sum: float = 0.0
         max_possible: float = sum(p.weight for p in _HEURISTIC_PATTERNS)

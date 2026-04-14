@@ -95,6 +95,10 @@ class WebSocketAdapter(ProtocolAdapter):
             logger.error("ws_connection_limit_reached", max=MAX_WEBSOCKET_CONNECTIONS)
             return None
 
+        if not agent.endpoint or not agent.endpoint.startswith(("ws://", "wss://")):
+            logger.warning("ws_invalid_endpoint", agent=str(agent.agent_id), endpoint=agent.endpoint)
+            return None
+
         import websockets
 
         agent_key = str(agent.agent_id)

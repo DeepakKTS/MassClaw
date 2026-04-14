@@ -222,6 +222,7 @@ class TestWebScrapeTool:
         mock_response = MagicMock()
         mock_response.text = fake_html
         mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {"content-type": "text/html; charset=utf-8"}
 
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -251,6 +252,7 @@ class TestWebScrapeTool:
         mock_response = MagicMock()
         mock_response.text = fake_html
         mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {"content-type": "text/html"}
 
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
