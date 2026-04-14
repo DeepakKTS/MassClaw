@@ -139,6 +139,9 @@ class AuditEventType(str, enum.Enum):
     CONSENSUS_REQUESTED = "consensus.requested"
     CONSENSUS_REACHED = "consensus.reached"
     CONSENSUS_FAILED = "consensus.failed"
+    # Tool execution
+    TOOL_EXECUTED = "tool.executed"
+    TOOL_BLOCKED = "tool.blocked"
 
 
 class ActorType(str, enum.Enum):

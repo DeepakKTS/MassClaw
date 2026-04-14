@@ -113,3 +113,8 @@ class DAGValidationError(MassClawError):
 
     def __init__(self, detail: str = "Invalid task dependency graph") -> None:
         super().__init__(detail=detail)
+
+
+class ToolExecutionError(MassClawError):
+    status_code = 500
+    error_code = "TOOL_EXECUTION_ERROR"

@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     llm_max_retries: int = 3
 
+    # Tool System
+    tool_max_iterations: int = 5
+    tool_code_timeout_seconds: int = 30
+    tool_code_memory_mb: int = 256
+    tool_workspace_base: str = "/tmp/massclaw/workspaces"
+    brave_search_api_key: str = ""
+    tool_docker_image: str = "python:3.12-slim"
+
     # Embedding Model
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimensions: int = 384
