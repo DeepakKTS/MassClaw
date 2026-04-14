@@ -250,6 +250,31 @@ export default function AgentPlan({
                                 <p className="text-[10px] font-semibold text-massclaw-text-muted/50 uppercase tracking-widest mb-2">Agent Output</p>
                                 <div className="text-sm leading-relaxed text-massclaw-text-muted whitespace-pre-wrap max-h-80 overflow-auto">{output.content}</div>
                               </div>
+                              {output.tool_calls && Array.isArray(output.tool_calls) && output.tool_calls.length > 0 && (
+                                <div className="mt-3 space-y-2">
+                                  <p className="text-[10px] font-semibold text-massclaw-text-muted/50 uppercase tracking-widest">
+                                    Tool Calls ({output.tool_calls.length})
+                                  </p>
+                                  {output.tool_calls.map((tc: { tool: string; success: boolean; result: string; arguments?: Record<string, unknown> }, i: number) => (
+                                    <div key={i} className="rounded-lg bg-massclaw-bg/40 border border-white/[0.04] p-3">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="font-mono font-bold text-xs text-massclaw-accent">{tc.tool}</span>
+                                        <span className={tc.success ? "text-massclaw-success text-xs" : "text-massclaw-danger text-xs"}>
+                                          {tc.success ? "passed" : "failed"}
+                                        </span>
+                                      </div>
+                                      {tc.arguments && (
+                                        <div className="text-[10px] font-mono text-massclaw-text-muted/60 mb-1 truncate">
+                                          {JSON.stringify(tc.arguments).slice(0, 120)}
+                                        </div>
+                                      )}
+                                      <div className="text-xs text-massclaw-text-muted whitespace-pre-wrap max-h-32 overflow-auto">
+                                        {tc.result}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                               {task.error_message && <p className="text-xs text-red-400 mt-2 pl-1">{task.error_message}</p>}
                             </div>
                           </motion.div>
