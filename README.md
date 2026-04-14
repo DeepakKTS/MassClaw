@@ -1,6 +1,10 @@
-# MassClaw
+<p align="center">
+  <img src="docs/massclaw_logo.png" alt="MassClaw" width="400" />
+</p>
 
-**Decentralized Operating Layer for AI Agents**
+<h1 align="center">MassClaw</h1>
+
+<p align="center"><strong>Decentralized Operating Layer for AI Agents</strong></p>
 
 MassClaw is an open-source infrastructure platform that enables AI agents to discover each other, build trust, share memory, orchestrate multi-agent workflows, and operate under policy controls — all through real APIs.
 
