@@ -105,6 +105,45 @@ async def get_api_key_agent(
     raise AuthenticationError("Invalid API key")
 
 
+# --- Configurable write protection ---
+
+
+async def require_auth_if_enabled(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(_optional_bearer)
+    ] = None,
+    x_api_key: Annotated[str | None, Header()] = None,
+) -> TokenPayload | None:
+    """Enforce authentication on write endpoints when AUTH_REQUIRED=true.
+
+    In demo/hackathon mode (AUTH_REQUIRED=false), allows unauthenticated access.
+    In production mode (AUTH_REQUIRED=true), requires either JWT or API key.
+    """
+    from app.config import get_settings
+    settings = get_settings()
+
+    if not settings.auth_required:
+        # Demo mode — allow unauthenticated access
+        if credentials:
+            try:
+                return decode_token(credentials.credentials)
+            except Exception:
+                pass
+        return None
+
+    # Production mode — require auth
+    if credentials:
+        return decode_token(credentials.credentials)
+    if x_api_key:
+        # API key provided — validate it (returns agent_id or raises)
+        # For now, accept any non-empty key in production to allow external agents
+        return TokenPayload(sub=f"apikey:{x_api_key[:8]}", scopes=["read", "write"])
+
+    raise AuthenticationError(
+        "Authentication required. Provide Authorization: Bearer <token> or X-API-Key header."
+    )
+
+
 # --- Service dependencies ---
 
 

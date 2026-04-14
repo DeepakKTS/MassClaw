@@ -116,6 +116,65 @@ async def create_workflow(
     return response
 
 
+class TaskSubmitRequest(BaseModel):
+    """Plain-English task submission for external agents (OpenClaw-compatible)."""
+    instruction: str = Field(..., min_length=5, max_length=50000, description="What you want the agents to do")
+    budget: float = Field(default=500, gt=0, le=10000, description="Maximum budget in credits")
+    domain: str | None = Field(default=None, max_length=100, description="Domain hint (auto-detected if omitted)")
+    priority: int = Field(default=5, ge=1, le=10, description="Priority (1=highest)")
+    user_id: str = Field(default="external-agent", max_length=255)
+
+
+# Mount this BEFORE the /{workflow_id} catch-all routes
+@router.post("/submit")
+async def submit_task(
+    data: TaskSubmitRequest,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Submit a plain-English task for multi-agent orchestration.
+
+    This is the primary endpoint for external agents (OpenClaw, stock agents).
+    MassClaw will automatically decompose, assign agents, execute, and synthesize.
+
+    Returns a workflow_id to track progress via GET /workflows/{id}/status.
+    """
+    # Convert to internal WorkflowCreate
+    wf_data = WorkflowCreate(
+        prompt=data.instruction,
+        budget_limit=data.budget,
+        domain=data.domain,
+        priority=data.priority,
+        user_id=data.user_id,
+    )
+
+    redis = get_redis_manager().get_cache_client()
+    async with db_session_context() as session:
+        from app.models.workflow import Workflow as WfModel
+        from app.models.base import WorkflowStatus as WfStatus
+        workflow = WfModel(
+            user_id=wf_data.user_id,
+            prompt=wf_data.prompt,
+            domain=wf_data.domain,
+            status=WfStatus.PENDING,
+            budget_limit=wf_data.budget_limit,
+            priority=wf_data.priority,
+        )
+        session.add(workflow)
+        await session.flush()
+        await session.refresh(workflow)
+        wf_id = str(workflow.workflow_id)
+
+    background_tasks.add_task(_execute_workflow_background, wf_id, wf_data)
+
+    return {
+        "workflow_id": wf_id,
+        "status": "pending",
+        "message": "Task accepted. Use workflow_id to track progress.",
+        "track_url": f"/api/v1/workflows/{wf_id}/status",
+        "result_url": f"/api/v1/workflows/{wf_id}/result",
+    }
+
+
 class EstimateBudgetRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000)
 

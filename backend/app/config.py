@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-production-use-a-secure-random-string"
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 60
+    auth_required: bool = False  # Set to True in production to enforce auth on write endpoints
 
     # LLM Providers
     anthropic_api_key: str = ""
