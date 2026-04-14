@@ -4,19 +4,19 @@ import hashlib
 import json
 import math
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
-from sqlalchemy import and_, delete, func, select, text
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.events import EventBus
 from app.core.logging import get_logger
 from app.embeddings.service import get_embedding_service
-from app.exceptions import NotFoundError, ValidationError
-from app.models.memory import MemoryRecord
+from app.exceptions import NotFoundError
 from app.models.base import MemoryType
+from app.models.memory import MemoryRecord
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.memory import (
     MemoryQueryRequest,
@@ -90,7 +90,7 @@ class MemoryService:
         # 4. Compute expiry
         expires_at = None
         if data.ttl_hours:
-            expires_at = datetime.now(timezone.utc) + timedelta(hours=data.ttl_hours)
+            expires_at = datetime.now(UTC) + timedelta(hours=data.ttl_hours)
 
         # 5. Create record
         record = MemoryRecord(
@@ -155,14 +155,9 @@ class MemoryService:
 
         # Build the pgvector cosine similarity query
         # 1 - (embedding <=> query_embedding) gives cosine similarity [0, 1]
-        similarity_expr = (
-            1 - MemoryRecord.embedding.cosine_distance(query_embedding)
-        ).label("similarity")
+        similarity_expr = (1 - MemoryRecord.embedding.cosine_distance(query_embedding)).label("similarity")
 
-        stmt = (
-            select(MemoryRecord, similarity_expr)
-            .where(MemoryRecord.embedding.isnot(None))
-        )
+        stmt = select(MemoryRecord, similarity_expr).where(MemoryRecord.embedding.isnot(None))
 
         # Apply filters
         conditions = []
@@ -174,10 +169,8 @@ class MemoryService:
             conditions.append(MemoryRecord.confidence >= query.min_confidence)
 
         # Exclude expired records
-        now = datetime.now(timezone.utc)
-        conditions.append(
-            (MemoryRecord.expires_at.is_(None)) | (MemoryRecord.expires_at > now)
-        )
+        now = datetime.now(UTC)
+        conditions.append((MemoryRecord.expires_at.is_(None)) | (MemoryRecord.expires_at > now))
 
         if conditions:
             stmt = stmt.where(and_(*conditions))
@@ -200,7 +193,7 @@ class MemoryService:
             # Compute freshness factor
             created = record.created_at
             if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+                created = created.replace(tzinfo=UTC)
             hours_since = (now - created).total_seconds() / 3600.0
             freshness_factor = math.exp(-decay_lambda * hours_since)
 
@@ -245,9 +238,7 @@ class MemoryService:
 
         # Count
         count_result = await self.session.execute(
-            select(func.count())
-            .select_from(MemoryRecord)
-            .where(and_(*conditions))
+            select(func.count()).select_from(MemoryRecord).where(and_(*conditions))
         )
         total = count_result.scalar_one()
 
@@ -278,9 +269,7 @@ class MemoryService:
 
         while current_id and current_id not in seen:
             seen.add(current_id)
-            result = await self.session.execute(
-                select(MemoryRecord).where(MemoryRecord.memory_id == current_id)
-            )
+            result = await self.session.execute(select(MemoryRecord).where(MemoryRecord.memory_id == current_id))
             record = result.scalar_one_or_none()
             if record is None:
                 break
@@ -315,9 +304,7 @@ class MemoryService:
 
     async def delete_memory(self, memory_id: uuid.UUID) -> None:
         """Soft delete: set confidence to 0 so it's filtered out of searches."""
-        result = await self.session.execute(
-            select(MemoryRecord).where(MemoryRecord.memory_id == memory_id)
-        )
+        result = await self.session.execute(select(MemoryRecord).where(MemoryRecord.memory_id == memory_id))
         record = result.scalar_one_or_none()
         if record is None:
             raise NotFoundError("MemoryRecord", str(memory_id))
@@ -338,7 +325,7 @@ class MemoryService:
 
         Returns counts of deleted records by category.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         counts = {"expired": 0, "low_confidence": 0, "total": 0}
 
         # 1. Delete expired records
@@ -356,9 +343,7 @@ class MemoryService:
 
         # 2. Delete records with confidence below threshold (soft-deleted)
         low_conf_result = await self.session.execute(
-            delete(MemoryRecord)
-            .where(MemoryRecord.confidence < min_confidence)
-            .returning(MemoryRecord.memory_id)
+            delete(MemoryRecord).where(MemoryRecord.confidence < min_confidence).returning(MemoryRecord.memory_id)
         )
         counts["low_confidence"] = len(low_conf_result.all())
 
@@ -366,9 +351,7 @@ class MemoryService:
         if max_age_hours:
             cutoff = now - timedelta(hours=max_age_hours)
             old_result = await self.session.execute(
-                delete(MemoryRecord)
-                .where(MemoryRecord.created_at < cutoff)
-                .returning(MemoryRecord.memory_id)
+                delete(MemoryRecord).where(MemoryRecord.created_at < cutoff).returning(MemoryRecord.memory_id)
             )
             counts["old"] = len(old_result.all())
 
@@ -383,9 +366,7 @@ class MemoryService:
     # --- Private helpers ---
 
     async def _get_memory(self, memory_id: uuid.UUID) -> MemoryRecord:
-        result = await self.session.execute(
-            select(MemoryRecord).where(MemoryRecord.memory_id == memory_id)
-        )
+        result = await self.session.execute(select(MemoryRecord).where(MemoryRecord.memory_id == memory_id))
         record = result.scalar_one_or_none()
         if record is None:
             raise NotFoundError("MemoryRecord", str(memory_id))
@@ -398,7 +379,7 @@ class MemoryService:
         memory_type: MemoryType,
     ) -> MemoryRecord | None:
         """Check for a recent conflicting write (same workflow + agent + type within window)."""
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.CONFLICT_WINDOW_SECONDS)
+        cutoff = datetime.now(UTC) - timedelta(seconds=self.CONFLICT_WINDOW_SECONDS)
         result = await self.session.execute(
             select(MemoryRecord)
             .where(
@@ -455,9 +436,7 @@ class MemoryService:
         try:
             cursor = 0
             while True:
-                cursor, keys = await self.redis.scan(
-                    cursor=cursor, match=f"{self.CACHE_PREFIX}*", count=100
-                )
+                cursor, keys = await self.redis.scan(cursor=cursor, match=f"{self.CACHE_PREFIX}*", count=100)
                 if keys:
                     await self.redis.delete(*keys)
                 if cursor == 0:

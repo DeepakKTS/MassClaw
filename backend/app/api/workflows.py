@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel, Field
@@ -33,19 +34,24 @@ MAX_WORKFLOW_TIMEOUT_SECONDS = 600  # 10 minutes max per workflow
 async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -> None:
     """Background task that executes the workflow with a hard timeout."""
     import asyncio
+
     from app.core.logging import get_logger
+
     logger = get_logger("workflow_bg")
 
     async def _run() -> None:
         redis = get_redis_manager().get_cache_client()
         async with db_session_context() as session:
             from sqlalchemy import select
+
             from app.models.workflow import Workflow as WfModel
+
             result = await session.execute(select(WfModel).where(WfModel.workflow_id == workflow_id))
             workflow = result.scalar_one()
             from app.intelligence.goal_interpreter import GoalInterpreter
             from app.intelligence.planner import AdaptivePlanner
             from app.intelligence.strategy_router import StrategyRouter
+
             goal = await GoalInterpreter().interpret(data.prompt)
             plan = AdaptivePlanner().plan(goal, float(data.budget_limit))
             strategy_router = StrategyRouter(session, redis)
@@ -53,7 +59,7 @@ async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -
 
     try:
         await asyncio.wait_for(_run(), timeout=MAX_WORKFLOW_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("workflow_timeout", workflow_id=workflow_id, timeout=MAX_WORKFLOW_TIMEOUT_SECONDS)
         await _mark_workflow_failed(workflow_id, f"Workflow timed out after {MAX_WORKFLOW_TIMEOUT_SECONDS}s")
     except Exception as e:
@@ -64,17 +70,21 @@ async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -
 async def _mark_workflow_failed(workflow_id: str, error_message: str) -> None:
     """Mark a workflow as failed. Separate function for reuse."""
     from app.core.logging import get_logger
+
     logger = get_logger("workflow_bg")
     try:
         async with db_session_context() as session:
+            from datetime import datetime
+
             from sqlalchemy import update
-            from app.models.workflow import Workflow as WfModel
+
             from app.models.base import WorkflowStatus
-            from datetime import datetime, timezone
+            from app.models.workflow import Workflow as WfModel
+
             await session.execute(
-                update(WfModel).where(WfModel.workflow_id == workflow_id)
-                .values(status=WorkflowStatus.FAILED, result={"error": error_message},
-                        completed_at=datetime.now(timezone.utc))
+                update(WfModel)
+                .where(WfModel.workflow_id == workflow_id)
+                .values(status=WorkflowStatus.FAILED, result={"error": error_message}, completed_at=datetime.now(UTC))
             )
     except Exception as inner_err:
         logger.error("workflow_failure_marking_failed", workflow_id=workflow_id, error=str(inner_err))
@@ -91,11 +101,11 @@ async def create_workflow(
     Execution happens asynchronously — monitor via GET /workflows/{id}/status
     or the SSE stream at GET /workflows/{id}/stream.
     """
-    import uuid as _uuid
-    redis = get_redis_manager().get_cache_client()
+    get_redis_manager().get_cache_client()  # Verify Redis is available
     async with db_session_context() as session:
-        from app.models.workflow import Workflow as WfModel
         from app.models.base import WorkflowStatus
+        from app.models.workflow import Workflow as WfModel
+
         workflow = WfModel(
             user_id=data.user_id,
             prompt=data.prompt,
@@ -118,6 +128,7 @@ async def create_workflow(
 
 class TaskSubmitRequest(BaseModel):
     """Plain-English task submission for external agents (OpenClaw-compatible)."""
+
     instruction: str = Field(..., min_length=5, max_length=50000, description="What you want the agents to do")
     budget: float = Field(default=500, gt=0, le=10000, description="Maximum budget in credits")
     domain: str | None = Field(default=None, max_length=100, description="Domain hint (auto-detected if omitted)")
@@ -147,10 +158,11 @@ async def submit_task(
         user_id=data.user_id,
     )
 
-    redis = get_redis_manager().get_cache_client()
+    get_redis_manager().get_cache_client()  # Verify Redis is available
     async with db_session_context() as session:
-        from app.models.workflow import Workflow as WfModel
         from app.models.base import WorkflowStatus as WfStatus
+        from app.models.workflow import Workflow as WfModel
+
         workflow = WfModel(
             user_id=wf_data.user_id,
             prompt=wf_data.prompt,
@@ -195,15 +207,47 @@ async def estimate_budget(data: EstimateBudgetRequest) -> dict:
 
     # Complexity signals
     complex_keywords = {
-        "analyze", "research", "investigate", "compare", "evaluate",
-        "comprehensive", "detailed", "thorough", "multi-step", "cross-reference",
-        "risk", "compliance", "audit", "security", "optimization", "forecast",
-        "strategy", "architecture", "design", "implement", "validate",
+        "analyze",
+        "research",
+        "investigate",
+        "compare",
+        "evaluate",
+        "comprehensive",
+        "detailed",
+        "thorough",
+        "multi-step",
+        "cross-reference",
+        "risk",
+        "compliance",
+        "audit",
+        "security",
+        "optimization",
+        "forecast",
+        "strategy",
+        "architecture",
+        "design",
+        "implement",
+        "validate",
     }
     action_keywords = {
-        "identify", "propose", "generate", "create", "build", "plan",
-        "assess", "review", "check", "verify", "map", "extract",
-        "summarize", "report", "brief", "schedule", "allocate", "estimate",
+        "identify",
+        "propose",
+        "generate",
+        "create",
+        "build",
+        "plan",
+        "assess",
+        "review",
+        "check",
+        "verify",
+        "map",
+        "extract",
+        "summarize",
+        "report",
+        "brief",
+        "schedule",
+        "allocate",
+        "estimate",
     }
 
     prompt_lower = prompt.lower()
@@ -242,11 +286,13 @@ async def estimate_budget(data: EstimateBudgetRequest) -> dict:
 @router.post("/cleanup-stale")
 async def cleanup_stale_workflows() -> dict:
     """Find and fail any workflows stuck in pending/running for > 10 minutes."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
+
     from sqlalchemy import update
+
     from app.models.workflow import Workflow as WfModel
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    cutoff = datetime.now(UTC) - timedelta(minutes=10)
     async with db_session_context() as session:
         result = await session.execute(
             update(WfModel)
@@ -257,7 +303,7 @@ async def cleanup_stale_workflows() -> dict:
             .values(
                 status=WorkflowStatus.FAILED,
                 result={"error": "Workflow timed out (stale cleanup)"},
-                completed_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(UTC),
             )
             .returning(WfModel.workflow_id)
         )
@@ -332,7 +378,6 @@ async def stream_workflow(workflow_id: uuid.UUID) -> EventSourceResponse:
             "data": json.dumps({"workflow_id": str(workflow_id), "message": "SSE stream connected"}),
         }
 
-        heartbeat_counter = 0
         async for event in EventBus.subscribe("workflow", str(workflow_id), "*"):
             yield {
                 "event": event.event_type,
@@ -357,10 +402,9 @@ async def get_reasoning_traces(
 ) -> list[dict]:
     """Get reasoning traces for a workflow."""
     from app.models.reasoning import ReasoningTrace
+
     result = await session.execute(
-        select(ReasoningTrace)
-        .where(ReasoningTrace.workflow_id == workflow_id)
-        .order_by(ReasoningTrace.created_at)
+        select(ReasoningTrace).where(ReasoningTrace.workflow_id == workflow_id).order_by(ReasoningTrace.created_at)
     )
     traces = result.scalars().all()
     return [

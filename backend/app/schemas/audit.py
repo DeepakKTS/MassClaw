@@ -33,8 +33,6 @@ class AuditQueryParams(BaseModel):
     agent_id: str | None = None
     event_type: AuditEventType | None = None
     actor_type: ActorType | None = None
-    search: str | None = Field(
-        default=None, max_length=500, description="Full-text search on summaries"
-    )
+    search: str | None = Field(default=None, max_length=500, description="Full-text search on summaries")
     since: datetime | None = None
     until: datetime | None = None

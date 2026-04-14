@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from app.core.redis import get_redis_manager
-
 
 # ---------------------------------------------------------------------------
 # Base event
@@ -21,7 +20,7 @@ class BaseEvent(BaseModel):
 
     event_id: str = Field(default_factory=lambda: str(uuid4()))
     event_type: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     correlation_id: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
 
@@ -355,7 +354,11 @@ class EventBus:
             async for message in pubsub.listen():
                 if message["type"] in ("message", "pmessage"):
                     raw = message["data"]
-                    channel = message.get("channel", b"").decode("utf-8") if isinstance(message.get("channel"), bytes) else message.get("channel", "")
+                    channel = (
+                        message.get("channel", b"").decode("utf-8")
+                        if isinstance(message.get("channel"), bytes)
+                        else message.get("channel", "")
+                    )
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8")
                     try:

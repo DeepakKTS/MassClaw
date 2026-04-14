@@ -57,17 +57,19 @@ class ReflectionEngine:
         """Evaluate outputs against the goal and recommend next action."""
         if not completed_outputs:
             return ReflectionResult(
-                should_continue=True, confidence=0.0,
-                action="accept", issues=["No outputs to evaluate"],
+                should_continue=True,
+                confidence=0.0,
+                action="accept",
+                issues=["No outputs to evaluate"],
             )
 
         outputs_text = "\n\n".join(
-            f"### {o.get('capability', 'unknown')}\n{o.get('content', '')[:1000]}"
-            for o in completed_outputs
+            f"### {o.get('capability', 'unknown')}\n{o.get('content', '')[:1000]}" for o in completed_outputs
         )
 
         try:
             import json
+
             response = await self.router.generate(
                 prompt=REFLECTION_PROMPT.format(goal=goal_description, outputs=outputs_text),
                 model="claude-sonnet-4-20250514",  # Haiku for cheap reflection
@@ -80,7 +82,7 @@ class ReflectionEngine:
             start = content.find("{")
             end = content.rfind("}")
             if start != -1 and end != -1:
-                parsed = json.loads(content[start:end + 1])
+                parsed = json.loads(content[start : end + 1])
                 result = ReflectionResult(
                     should_continue=parsed.get("should_continue", True),
                     confidence=parsed.get("confidence", 0.5),
@@ -101,6 +103,9 @@ class ReflectionEngine:
 
         # Fallback: accept if we have outputs
         return ReflectionResult(
-            should_continue=False, confidence=0.7,
-            action="accept", issues=[], suggestions=["Reflection LLM call failed, accepting outputs"],
+            should_continue=False,
+            confidence=0.7,
+            action="accept",
+            issues=[],
+            suggestions=["Reflection LLM call failed, accepting outputs"],
         )

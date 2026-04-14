@@ -66,6 +66,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             from app.core.logging import get_logger
+
             _logger = get_logger(__name__)
             _logger.error("rate_limit_redis_error", error=str(e))
 

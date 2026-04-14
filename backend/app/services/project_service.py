@@ -31,9 +31,7 @@ class ProjectService:
         owner_id: str = "default",
     ) -> Project:
         """Create a new project. Raises ConflictError if name already exists."""
-        existing = await self.session.execute(
-            select(Project).where(Project.name == name)
-        )
+        existing = await self.session.execute(select(Project).where(Project.name == name))
         if existing.scalar_one_or_none() is not None:
             raise ConflictError(f"Project with name '{name}' already exists")
 
@@ -45,19 +43,15 @@ class ProjectService:
         return project
 
     async def list_projects(
-        self, pagination: PaginationParams,
+        self,
+        pagination: PaginationParams,
     ) -> PaginatedResponse:
         """List projects with pagination."""
-        count_result = await self.session.execute(
-            select(func.count()).select_from(Project)
-        )
+        count_result = await self.session.execute(select(func.count()).select_from(Project))
         total = count_result.scalar_one()
 
         result = await self.session.execute(
-            select(Project)
-            .order_by(Project.created_at.desc())
-            .offset(pagination.offset)
-            .limit(pagination.page_size)
+            select(Project).order_by(Project.created_at.desc()).offset(pagination.offset).limit(pagination.page_size)
         )
         projects = list(result.scalars().all())
 
@@ -70,9 +64,7 @@ class ProjectService:
 
     async def get_project(self, project_id: uuid.UUID) -> Project:
         """Get a project by ID."""
-        result = await self.session.execute(
-            select(Project).where(Project.project_id == project_id)
-        )
+        result = await self.session.execute(select(Project).where(Project.project_id == project_id))
         project = result.scalar_one_or_none()
         if project is None:
             raise NotFoundError("Project", str(project_id))
@@ -135,12 +127,12 @@ class ProjectService:
         return list(result.scalars().all())
 
     async def update_backlog_task(
-        self, backlog_task_id: uuid.UUID, **fields: object,
+        self,
+        backlog_task_id: uuid.UUID,
+        **fields: object,
     ) -> BacklogTask:
         """Update mutable backlog-task fields."""
-        result = await self.session.execute(
-            select(BacklogTask).where(BacklogTask.backlog_task_id == backlog_task_id)
-        )
+        result = await self.session.execute(select(BacklogTask).where(BacklogTask.backlog_task_id == backlog_task_id))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("BacklogTask", str(backlog_task_id))
@@ -157,9 +149,7 @@ class ProjectService:
 
     async def delete_backlog_task(self, backlog_task_id: uuid.UUID) -> None:
         """Delete a backlog task."""
-        result = await self.session.execute(
-            select(BacklogTask).where(BacklogTask.backlog_task_id == backlog_task_id)
-        )
+        result = await self.session.execute(select(BacklogTask).where(BacklogTask.backlog_task_id == backlog_task_id))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("BacklogTask", str(backlog_task_id))
@@ -203,9 +193,7 @@ class ProjectService:
     async def list_sprints(self, project_id: uuid.UUID) -> list[Sprint]:
         """List all sprints for a project."""
         result = await self.session.execute(
-            select(Sprint)
-            .where(Sprint.project_id == project_id)
-            .order_by(Sprint.start_date.asc())
+            select(Sprint).where(Sprint.project_id == project_id).order_by(Sprint.start_date.asc())
         )
         return list(result.scalars().all())
 
@@ -219,9 +207,7 @@ class ProjectService:
     ) -> SprintTask:
         """Add a backlog task to a sprint."""
         # Verify sprint exists
-        sprint_result = await self.session.execute(
-            select(Sprint).where(Sprint.sprint_id == sprint_id)
-        )
+        sprint_result = await self.session.execute(select(Sprint).where(Sprint.sprint_id == sprint_id))
         if sprint_result.scalar_one_or_none() is None:
             raise NotFoundError("Sprint", str(sprint_id))
 
@@ -234,8 +220,7 @@ class ProjectService:
 
         # Determine next position
         max_pos_result = await self.session.execute(
-            select(func.coalesce(func.max(SprintTask.position), -1))
-            .where(SprintTask.sprint_id == sprint_id)
+            select(func.coalesce(func.max(SprintTask.position), -1)).where(SprintTask.sprint_id == sprint_id)
         )
         next_pos = max_pos_result.scalar_one() + 1
 
@@ -263,9 +248,7 @@ class ProjectService:
         assigned_to: str | None = None,
     ) -> SprintTask:
         """Update a sprint task's status, position, or assignee."""
-        result = await self.session.execute(
-            select(SprintTask).where(SprintTask.sprint_task_id == sprint_task_id)
-        )
+        result = await self.session.execute(select(SprintTask).where(SprintTask.sprint_task_id == sprint_task_id))
         sprint_task = result.scalar_one_or_none()
         if sprint_task is None:
             raise NotFoundError("SprintTask", str(sprint_task_id))
@@ -284,9 +267,7 @@ class ProjectService:
 
     async def remove_sprint_task(self, sprint_task_id: uuid.UUID) -> None:
         """Remove a task from a sprint."""
-        result = await self.session.execute(
-            select(SprintTask).where(SprintTask.sprint_task_id == sprint_task_id)
-        )
+        result = await self.session.execute(select(SprintTask).where(SprintTask.sprint_task_id == sprint_task_id))
         sprint_task = result.scalar_one_or_none()
         if sprint_task is None:
             raise NotFoundError("SprintTask", str(sprint_task_id))
@@ -295,7 +276,9 @@ class ProjectService:
         logger.info("sprint_task_removed", sprint_task_id=str(sprint_task_id))
 
     async def reorder_sprint_tasks(
-        self, sprint_id: uuid.UUID, task_ids: list[uuid.UUID],
+        self,
+        sprint_id: uuid.UUID,
+        task_ids: list[uuid.UUID],
     ) -> None:
         """Bulk-reorder sprint tasks by setting positions according to the list order."""
         for position, task_id in enumerate(task_ids):
@@ -318,12 +301,12 @@ class ProjectService:
         )
 
     async def link_workflow(
-        self, sprint_task_id: uuid.UUID, workflow_id: uuid.UUID,
+        self,
+        sprint_task_id: uuid.UUID,
+        workflow_id: uuid.UUID,
     ) -> SprintTask:
         """Link a sprint task to a workflow execution."""
-        result = await self.session.execute(
-            select(SprintTask).where(SprintTask.sprint_task_id == sprint_task_id)
-        )
+        result = await self.session.execute(select(SprintTask).where(SprintTask.sprint_task_id == sprint_task_id))
         sprint_task = result.scalar_one_or_none()
         if sprint_task is None:
             raise NotFoundError("SprintTask", str(sprint_task_id))

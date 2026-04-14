@@ -6,7 +6,7 @@ import time
 import uuid
 
 import redis.asyncio as aioredis
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import EventBus
@@ -35,9 +35,7 @@ class TaskTestService:
     ) -> TaskTest:
         """Run a test assertion against a task's output."""
         # Get task
-        result = await self.session.execute(
-            select(Task).where(Task.task_id == task_id)
-        )
+        result = await self.session.execute(select(Task).where(Task.task_id == task_id))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("Task", str(task_id))
@@ -99,9 +97,7 @@ class TaskTestService:
 
     async def list_tests(self, task_id: uuid.UUID) -> list[TaskTest]:
         result = await self.session.execute(
-            select(TaskTest)
-            .where(TaskTest.task_id == task_id)
-            .order_by(TaskTest.created_at.desc())
+            select(TaskTest).where(TaskTest.task_id == task_id).order_by(TaskTest.created_at.desc())
         )
         return list(result.scalars().all())
 

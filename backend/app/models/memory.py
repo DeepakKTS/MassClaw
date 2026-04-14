@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -19,10 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import pg_enum
 from app.models.base import Base, MemoryType
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
-    from app.models.agent import Agent
     from app.models.workflow import Workflow
 
 
@@ -46,36 +44,24 @@ class MemoryRecord(Base):
         nullable=True,
         index=True,
     )
-    memory_type: Mapped[MemoryType] = mapped_column(
-        pg_enum(MemoryType), nullable=False, index=True
-    )
+    memory_type: Mapped[MemoryType] = mapped_column(pg_enum(MemoryType), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(384), nullable=True
-    )
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
     metadata_: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
-    confidence: Mapped[float] = mapped_column(
-        Float, nullable=False, server_default=text("0.8")
-    )
-    freshness: Mapped[float] = mapped_column(
-        Float, nullable=False, server_default=text("1.0")
-    )
-    version: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("1")
-    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.8"))
+    freshness: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("memory_records.memory_id", ondelete="SET NULL"),
         nullable=True,
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("now()"),

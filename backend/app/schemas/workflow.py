@@ -11,16 +11,10 @@ from app.models.base import WorkflowStatus
 class WorkflowCreate(BaseModel):
     """Request schema for creating a new workflow."""
 
-    prompt: str = Field(
-        ..., min_length=10, max_length=50000, description="User prompt / task description"
-    )
+    prompt: str = Field(..., min_length=10, max_length=50000, description="User prompt / task description")
     user_id: str = Field(default="default", max_length=255)
-    domain: str | None = Field(
-        default=None, max_length=100, description="Domain hint (auto-detected if not provided)"
-    )
-    budget_limit: float = Field(
-        ..., gt=0, description="Maximum budget in credits"
-    )
+    domain: str | None = Field(default=None, max_length=100, description="Domain hint (auto-detected if not provided)")
+    budget_limit: float = Field(..., gt=0, description="Maximum budget in credits")
     priority: int = Field(default=5, ge=1, le=10, description="Workflow priority (1=highest)")
     metadata: dict = Field(default_factory=dict)
 

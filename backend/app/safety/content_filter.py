@@ -37,15 +37,9 @@ logger = get_logger(__name__)
 
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _CREDIT_CARD_RE = re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b")
-_EMAIL_RE = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-)
-_PHONE_RE = re.compile(
-    r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
-)
-_IP_ADDRESS_RE = re.compile(
-    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"
-)
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_PHONE_RE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+_IP_ADDRESS_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b")
 
 _PII_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("ssn", _SSN_RE, "[REDACTED_SSN]"),
@@ -60,19 +54,16 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
 # ---------------------------------------------------------------------------
 
 _HARMFUL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("sql_injection", re.compile(
-        r"(?i)(?:(?:union\s+select)|(?:drop\s+table)|(?:insert\s+into)|"
-        r"(?:delete\s+from)|(?:update\s+\w+\s+set)|(?:;\s*--)|(?:'\s*or\s+'1'\s*=\s*'1))"
-    )),
-    ("xss_attempt", re.compile(
-        r"(?i)<\s*script[^>]*>|javascript\s*:|on(?:error|load|click)\s*="
-    )),
-    ("path_traversal", re.compile(
-        r"(?:\.\./){2,}|(?:\.\.\%2[fF]){2,}"
-    )),
-    ("command_injection", re.compile(
-        r"(?:;\s*(?:rm|cat|wget|curl|bash|sh|python|perl|nc)\s)|(?:\|\s*(?:bash|sh)\b)"
-    )),
+    (
+        "sql_injection",
+        re.compile(
+            r"(?i)(?:(?:union\s+select)|(?:drop\s+table)|(?:insert\s+into)|"
+            r"(?:delete\s+from)|(?:update\s+\w+\s+set)|(?:;\s*--)|(?:'\s*or\s+'1'\s*=\s*'1))"
+        ),
+    ),
+    ("xss_attempt", re.compile(r"(?i)<\s*script[^>]*>|javascript\s*:|on(?:error|load|click)\s*=")),
+    ("path_traversal", re.compile(r"(?:\.\./){2,}|(?:\.\.\%2[fF]){2,}")),
+    ("command_injection", re.compile(r"(?:;\s*(?:rm|cat|wget|curl|bash|sh|python|perl|nc)\s)|(?:\|\s*(?:bash|sh)\b)")),
 ]
 
 # ---------------------------------------------------------------------------
@@ -127,6 +118,7 @@ _MEDIUM_CONFIDENCE_HIGH = 0.75
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True, slots=True)
 class PIIMatch:
     """A single PII match detected by the regex layer."""
@@ -168,6 +160,7 @@ class ContentAnalysis:
 # ---------------------------------------------------------------------------
 # Content Filter
 # ---------------------------------------------------------------------------
+
 
 class ContentFilter:
     """Layered content filtering engine.
@@ -248,9 +241,7 @@ class ContentFilter:
             is_safe = False
 
         # Compute raw confidence from NLP scores.
-        unsafe_scores = [
-            v for k, v in category_scores.items() if k != "safe"
-        ]
+        unsafe_scores = [v for k, v in category_scores.items() if k != "safe"]
         max_unsafe = max(unsafe_scores) if unsafe_scores else 0.0
         safe_score = category_scores.get("safe", 0.0)
 
@@ -262,11 +253,7 @@ class ContentFilter:
             confidence = max(0.5, max_unsafe)
 
         # Layer 3: Optional LLM verification for medium-confidence flags
-        if (
-            self._enable_llm_verification
-            and flags
-            and _MEDIUM_CONFIDENCE_LOW <= confidence <= _MEDIUM_CONFIDENCE_HIGH
-        ):
+        if self._enable_llm_verification and flags and _MEDIUM_CONFIDENCE_LOW <= confidence <= _MEDIUM_CONFIDENCE_HIGH:
             llm_result = await self._llm_verify(content, flags)
             if llm_result is not None:
                 is_safe = llm_result["is_safe"]
@@ -485,6 +472,7 @@ class ContentFilter:
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
+
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors.

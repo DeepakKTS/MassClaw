@@ -3,11 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import Depends, Header, Query
+import redis.asyncio as aioredis
+from fastapi import Depends, Header
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-
-import redis.asyncio as aioredis
 
 from app.core.database import get_db_session
 from app.core.redis import get_redis
@@ -30,9 +29,7 @@ _optional_bearer = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None, Depends(_optional_bearer)
-    ] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_optional_bearer)] = None,
 ) -> TokenPayload:
     """Extract and validate JWT from Authorization: Bearer header.
 
@@ -44,9 +41,7 @@ async def get_current_user(
 
 
 async def get_optional_user(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None, Depends(_optional_bearer)
-    ] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_optional_bearer)] = None,
 ) -> TokenPayload | None:
     """Extract JWT if present, return None if absent. No error on missing token."""
     if credentials is None:
@@ -69,9 +64,7 @@ def require_scopes(*required_scopes: str) -> Callable:
     ) -> TokenPayload:
         missing = set(required_scopes) - set(user.scopes)
         if missing:
-            raise AuthorizationError(
-                f"Missing required scopes: {', '.join(sorted(missing))}"
-            )
+            raise AuthorizationError(f"Missing required scopes: {', '.join(sorted(missing))}")
         return user
 
     return _check_scopes
@@ -90,15 +83,12 @@ async def get_api_key_agent(
         return None
 
     from sqlalchemy import select
+
     from app.models.agent import Agent
 
     # Only load agents that actually have an api_key_hash in their metadata,
     # rather than loading ALL agents and iterating in Python (O(N) scan).
-    result = await session.execute(
-        select(Agent).where(
-            Agent.metadata_["api_key_hash"].as_string().isnot(None)
-        )
-    )
+    result = await session.execute(select(Agent).where(Agent.metadata_["api_key_hash"].as_string().isnot(None)))
     agents = result.scalars().all()
 
     for agent in agents:
@@ -113,9 +103,7 @@ async def get_api_key_agent(
 
 
 async def require_auth_if_enabled(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None, Depends(_optional_bearer)
-    ] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_optional_bearer)] = None,
     x_api_key: Annotated[str | None, Header()] = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> TokenPayload | None:
@@ -125,6 +113,7 @@ async def require_auth_if_enabled(
     When AUTH_REQUIRED=true, requires either a valid JWT or a verified API key.
     """
     from app.config import get_settings
+
     settings = get_settings()
 
     if not settings.auth_required:
@@ -142,13 +131,10 @@ async def require_auth_if_enabled(
     if x_api_key:
         # Validate API key against agent registry — only load agents with keys
         from sqlalchemy import select
+
         from app.models.agent import Agent
 
-        result = await session.execute(
-            select(Agent).where(
-                Agent.metadata_["api_key_hash"].as_string().isnot(None)
-            )
-        )
+        result = await session.execute(select(Agent).where(Agent.metadata_["api_key_hash"].as_string().isnot(None)))
         agents = result.scalars().all()
 
         for agent in agents:
@@ -160,9 +146,7 @@ async def require_auth_if_enabled(
                 )
         raise AuthenticationError("Invalid API key")
 
-    raise AuthenticationError(
-        "Authentication required. Provide Authorization: Bearer <token> or X-API-Key header."
-    )
+    raise AuthenticationError("Authentication required. Provide Authorization: Bearer <token> or X-API-Key header.")
 
 
 # --- Service dependencies ---

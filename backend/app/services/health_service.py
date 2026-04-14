@@ -4,6 +4,7 @@ Provides on-demand single-agent health checks and a comprehensive
 system health overview covering database, Redis, agents, memory,
 workflows, trust events, embeddings, and WebSocket connections.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -36,9 +37,7 @@ class HealthService:
         Performs an HTTP GET to the agent's health_check_url and returns
         a dict with connectivity status, latency, and HTTP status code.
         """
-        result = await self.session.execute(
-            select(Agent).where(Agent.agent_id == agent_id)
-        )
+        result = await self.session.execute(select(Agent).where(Agent.agent_id == agent_id))
         agent = result.scalar_one_or_none()
         if agent is None:
             return {"healthy": False, "error": "Agent not found"}
@@ -150,9 +149,7 @@ class HealthService:
 
     async def _get_agent_counts(self) -> dict:
         """Get agent counts grouped by status."""
-        result = await self.session.execute(
-            select(Agent.status, func.count()).group_by(Agent.status)
-        )
+        result = await self.session.execute(select(Agent.status, func.count()).group_by(Agent.status))
         rows = result.all()
         counts = {status.value: 0 for status in AgentStatus}
         for status, count in rows:
@@ -164,9 +161,7 @@ class HealthService:
     async def _get_count(self, model) -> int:
         """Get total count for a given model table."""
         try:
-            result = await self.session.execute(
-                select(func.count()).select_from(model)
-            )
+            result = await self.session.execute(select(func.count()).select_from(model))
             return result.scalar_one()
         except Exception:
             return 0
@@ -176,6 +171,7 @@ class HealthService:
         """Get embedding service status without importing at module level."""
         try:
             from app.embeddings.service import get_embedding_service
+
             service = get_embedding_service()
             return service.get_status()
         except Exception:
@@ -186,6 +182,7 @@ class HealthService:
         """Get WebSocket connection count from the connection manager."""
         try:
             from app.api.websocket import get_ws_manager
+
             manager = get_ws_manager()
             return manager.get_status()
         except Exception:

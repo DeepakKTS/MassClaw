@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
@@ -11,8 +11,7 @@ from app.core.events import EventBus
 from app.core.logging import get_logger
 from app.exceptions import NotFoundError, ValidationError
 from app.models.task import Task
-from app.models.base import TaskStatus
-from app.orchestration.state_machine import validate_transition, get_valid_override_actions
+from app.orchestration.state_machine import get_valid_override_actions, validate_transition
 
 logger = get_logger(__name__)
 
@@ -25,9 +24,7 @@ class TaskService:
         self.redis = redis
 
     async def get_task(self, task_id: uuid.UUID) -> Task:
-        result = await self.session.execute(
-            select(Task).where(Task.task_id == task_id)
-        )
+        result = await self.session.execute(select(Task).where(Task.task_id == task_id))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("Task", str(task_id))
@@ -46,12 +43,12 @@ class TaskService:
         Uses SELECT FOR UPDATE to prevent race conditions with the scheduler.
         """
         if action not in ("retry", "skip", "force_complete", "cancel"):
-            raise ValidationError(f"Invalid override action: {action}. Must be one of: retry, skip, force_complete, cancel")
+            raise ValidationError(
+                f"Invalid override action: {action}. Must be one of: retry, skip, force_complete, cancel"
+            )
 
         # Row-level lock to prevent concurrent modifications
-        result = await self.session.execute(
-            select(Task).where(Task.task_id == task_id).with_for_update()
-        )
+        result = await self.session.execute(select(Task).where(Task.task_id == task_id).with_for_update())
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("Task", str(task_id))
@@ -59,10 +56,7 @@ class TaskService:
         # Check valid override actions for current state
         valid = get_valid_override_actions(task.status)
         if action not in valid:
-            raise ValidationError(
-                f"Cannot '{action}' task in '{task.status.value}' state. "
-                f"Valid actions: {valid}"
-            )
+            raise ValidationError(f"Cannot '{action}' task in '{task.status.value}' state. Valid actions: {valid}")
 
         # Validate and get new status
         new_status = validate_transition(task.status, action)
@@ -84,7 +78,7 @@ class TaskService:
             if force_output:
                 task.output = force_output
             task.confidence = 1.0  # Manually verified
-            task.completed_at = datetime.now(timezone.utc)
+            task.completed_at = datetime.now(UTC)
             task.error_message = None
 
         elif action == "cancel":

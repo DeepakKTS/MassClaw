@@ -26,7 +26,7 @@ import uuid
 from typing import Any
 
 import redis.asyncio as aioredis
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -51,9 +51,7 @@ logger = get_logger(__name__)
 _CACHE_KEY = "massclaw:policy:active_rules"
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 
-_SUPPORTED_OPS: frozenset[str] = frozenset(
-    {"eq", "ne", "lt", "le", "gt", "ge", "in", "not_in", "contains", "exists"}
-)
+_SUPPORTED_OPS: frozenset[str] = frozenset({"eq", "ne", "lt", "le", "gt", "ge", "in", "not_in", "contains", "exists"})
 
 # Operator dispatch table -- avoids repetitive if/elif chains.
 _OP_DISPATCH: dict[str, Any] = {
@@ -120,10 +118,7 @@ class PolicyEngine:
         # We match if the action string *starts with* the rule_type value,
         # enabling hierarchical matching (e.g. rule_type "resource" matches
         # action "resource.write").
-        matching_rules = [
-            r for r in rules
-            if action == r["rule_type"] or action.startswith(f'{r["rule_type"]}.')
-        ]
+        matching_rules = [r for r in rules if action == r["rule_type"] or action.startswith(f"{r['rule_type']}.")]
 
         # Sort by priority ascending (lower number = higher priority).
         matching_rules.sort(key=lambda r: r["priority"])
@@ -163,10 +158,7 @@ class PolicyEngine:
             if rule_action in (PolicyAction.DENY, PolicyAction.REQUIRE_APPROVAL):
                 decision_action = rule_action
                 matched_rule_name = rule["name"]
-                reason = (
-                    rule.get("description")
-                    or f"Action blocked by policy rule '{rule['name']}'."
-                )
+                reason = rule.get("description") or f"Action blocked by policy rule '{rule['name']}'."
                 break
 
             # FLAG and LOG do not block; continue evaluating.
@@ -393,8 +385,7 @@ class PolicyEngine:
         total: int = total_result.scalar_one()
 
         query = (
-            query
-            .order_by(PolicyRule.priority.asc(), PolicyRule.created_at.desc())
+            query.order_by(PolicyRule.priority.asc(), PolicyRule.created_at.desc())
             .offset(pagination.offset)
             .limit(pagination.page_size)
         )
@@ -498,9 +489,7 @@ class PolicyEngine:
             )
 
         if op not in _SUPPORTED_OPS:
-            raise ValidationError(
-                f"Unsupported operator '{op}'. Supported: {sorted(_SUPPORTED_OPS)}"
-            )
+            raise ValidationError(f"Unsupported operator '{op}'. Supported: {sorted(_SUPPORTED_OPS)}")
 
         found, resolved_value = cls._resolve_field(context, field_path)
 
@@ -548,9 +537,7 @@ class PolicyEngine:
 
         # Cache miss or error -- query DB.
         result = await self.session.execute(
-            select(PolicyRule)
-            .where(PolicyRule.enabled.is_(True))
-            .order_by(PolicyRule.priority.asc())
+            select(PolicyRule).where(PolicyRule.enabled.is_(True)).order_by(PolicyRule.priority.asc())
         )
         rules = list(result.scalars().all())
 
@@ -591,9 +578,7 @@ class PolicyEngine:
 
     async def _get_rule_or_raise(self, rule_id: uuid.UUID) -> PolicyRule:
         """Fetch a rule by ID or raise ``NotFoundError``."""
-        result = await self.session.execute(
-            select(PolicyRule).where(PolicyRule.rule_id == rule_id)
-        )
+        result = await self.session.execute(select(PolicyRule).where(PolicyRule.rule_id == rule_id))
         rule = result.scalar_one_or_none()
         if rule is None:
             raise NotFoundError("PolicyRule", str(rule_id))
@@ -635,19 +620,12 @@ class PolicyEngine:
 
         # Leaf condition
         if "field" not in condition or "op" not in condition:
-            raise ValidationError(
-                "Leaf condition must include 'field' and 'op' keys. "
-                f"Got: {sorted(condition.keys())}"
-            )
+            raise ValidationError(f"Leaf condition must include 'field' and 'op' keys. Got: {sorted(condition.keys())}")
 
         op = condition["op"]
         if op not in _SUPPORTED_OPS:
-            raise ValidationError(
-                f"Unsupported operator '{op}'. Supported: {sorted(_SUPPORTED_OPS)}"
-            )
+            raise ValidationError(f"Unsupported operator '{op}'. Supported: {sorted(_SUPPORTED_OPS)}")
 
         # ``exists`` does not require a ``value`` key.
         if op != "exists" and "value" not in condition:
-            raise ValidationError(
-                f"Operator '{op}' requires a 'value' key in the condition."
-            )
+            raise ValidationError(f"Operator '{op}' requires a 'value' key in the condition.")

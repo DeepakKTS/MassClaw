@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,9 +62,7 @@ async def get_task(
     session: AsyncSession = Depends(get_db_session),
 ) -> TaskResponse:
     """Get a single task by ID."""
-    result = await session.execute(
-        select(Task).where(Task.task_id == task_id)
-    )
+    result = await session.execute(select(Task).where(Task.task_id == task_id))
     task = result.scalar_one_or_none()
     if task is None:
         raise NotFoundError("Task", str(task_id))
@@ -77,11 +75,7 @@ async def get_workflow_tasks(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[TaskSummary]:
     """Get all tasks for a workflow, ordered by step number."""
-    result = await session.execute(
-        select(Task)
-        .where(Task.workflow_id == workflow_id)
-        .order_by(Task.step_number)
-    )
+    result = await session.execute(select(Task).where(Task.workflow_id == workflow_id).order_by(Task.step_number))
     tasks = list(result.scalars().all())
     return [TaskSummary.model_validate(t) for t in tasks]
 

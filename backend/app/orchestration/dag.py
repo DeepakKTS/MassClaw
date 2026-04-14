@@ -38,7 +38,7 @@ class DAG:
     def __init__(self, nodes: list[DAGNode]) -> None:
         self._nodes: dict[str, DAGNode] = {n.node_id: n for n in nodes}
         self._adjacency: dict[str, list[str]] = defaultdict(list)  # parent -> children
-        self._reverse: dict[str, list[str]] = defaultdict(list)    # child -> parents
+        self._reverse: dict[str, list[str]] = defaultdict(list)  # child -> parents
 
         for node in nodes:
             for dep in node.depends_on:
@@ -58,14 +58,12 @@ class DAG:
         for node in self._nodes.values():
             for dep in node.depends_on:
                 if dep not in all_ids:
-                    raise DAGValidationError(
-                        f"Node '{node.node_id}' depends on non-existent node '{dep}'"
-                    )
+                    raise DAGValidationError(f"Node '{node.node_id}' depends on non-existent node '{dep}'")
 
         # Kahn's algorithm for cycle detection
         in_degree: dict[str, int] = {nid: 0 for nid in self._nodes}
         for node in self._nodes.values():
-            for dep in node.depends_on:
+            for _dep in node.depends_on:
                 in_degree[node.node_id] += 1
 
         queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
@@ -84,9 +82,7 @@ class DAG:
 
         if sorted_count != len(self._nodes):
             remaining = [nid for nid, deg in in_degree.items() if deg > 0]
-            raise DAGValidationError(
-                f"DAG contains a cycle involving nodes: {remaining}"
-            )
+            raise DAGValidationError(f"DAG contains a cycle involving nodes: {remaining}")
 
         # Check at least one leaf node
         leaves = [nid for nid in self._nodes if not self._adjacency[nid]]
@@ -117,15 +113,11 @@ class DAG:
                 continue
             # Check if any dependency failed/skipped → block this node
             any_dep_failed = any(
-                self._nodes[dep].status in (TaskStatus.FAILED, TaskStatus.SKIPPED)
-                for dep in node.depends_on
+                self._nodes[dep].status in (TaskStatus.FAILED, TaskStatus.SKIPPED) for dep in node.depends_on
             )
             if any_dep_failed:
                 continue  # Will be handled by mark_failed cascade
-            deps_met = all(
-                self._nodes[dep].status == TaskStatus.COMPLETED
-                for dep in node.depends_on
-            )
+            deps_met = all(self._nodes[dep].status == TaskStatus.COMPLETED for dep in node.depends_on)
             if deps_met:
                 ready.append(node)
         return ready
@@ -206,8 +198,7 @@ class DAG:
         if total == 0:
             return 100.0
         done = sum(
-            1 for n in self._nodes.values()
-            if n.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SKIPPED)
+            1 for n in self._nodes.values() if n.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SKIPPED)
         )
         return round(done / total * 100, 1)
 

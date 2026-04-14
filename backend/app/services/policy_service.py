@@ -136,9 +136,7 @@ class PolicyEngine:
         The first DENY or REQUIRE_APPROVAL rule that matches short-circuits.
         """
         result = await self.session.execute(
-            select(PolicyRule)
-            .where(PolicyRule.enabled.is_(True))
-            .order_by(PolicyRule.priority.asc())
+            select(PolicyRule).where(PolicyRule.enabled.is_(True)).order_by(PolicyRule.priority.asc())
         )
         rules = list(result.scalars().all())
 
@@ -276,9 +274,10 @@ class ContentFilter:
 
         safe = len(flagged) == 0
 
-        explanation = "Content is safe." if safe else (
-            f"Content flagged in categories: {', '.join(flagged)}. "
-            f"Highest severity: {severity}."
+        explanation = (
+            "Content is safe."
+            if safe
+            else (f"Content flagged in categories: {', '.join(flagged)}. Highest severity: {severity}.")
         )
 
         return ContentAnalysis(
@@ -433,9 +432,7 @@ class PolicyService:
         pagination: PaginationParams,
     ) -> PaginatedResponse[PolicyRuleResponse]:
         """List all policy rules with pagination."""
-        count_result = await self.session.execute(
-            select(func.count()).select_from(PolicyRule)
-        )
+        count_result = await self.session.execute(select(func.count()).select_from(PolicyRule))
         total = count_result.scalar_one()
 
         result = await self.session.execute(
@@ -475,9 +472,7 @@ class PolicyService:
     async def get_rule(self, rule_id: str | uuid.UUID) -> PolicyRule:
         """Fetch a single rule by ID or raise NotFoundError."""
         uid = rule_id if isinstance(rule_id, uuid.UUID) else uuid.UUID(str(rule_id))
-        result = await self.session.execute(
-            select(PolicyRule).where(PolicyRule.rule_id == uid)
-        )
+        result = await self.session.execute(select(PolicyRule).where(PolicyRule.rule_id == uid))
         rule = result.scalar_one_or_none()
         if rule is None:
             raise NotFoundError("PolicyRule", str(rule_id))

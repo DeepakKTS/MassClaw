@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import redis.asyncio as aioredis
-
-from app.core.database import get_db_session, get_engine
-from app.core.redis import get_redis, get_redis_manager
 from app.config import get_settings
+from app.core.database import get_db_session, get_engine
+from app.core.redis import get_redis
 from app.embeddings.service import get_embedding_service
 
 router = APIRouter()
@@ -24,29 +23,26 @@ async def prometheus_metrics(
 
     Returns key system metrics for monitoring dashboards.
     """
-    from sqlalchemy import func, select, text
+    from sqlalchemy import func, select
+
     from app.models.agent import Agent
-    from app.models.workflow import Workflow
-    from app.models.task import Task
+    from app.models.base import AgentStatus, TaskStatus, WorkflowStatus
     from app.models.memory import MemoryRecord
+    from app.models.task import Task
     from app.models.trust import TrustEvent
     from app.models.wallet import WalletEvent
-    from app.models.base import AgentStatus, WorkflowStatus, TaskStatus
+    from app.models.workflow import Workflow
 
     # Agent counts by status
     agent_counts = {}
     for status in AgentStatus:
-        result = await session.execute(
-            select(func.count()).select_from(Agent).where(Agent.status == status)
-        )
+        result = await session.execute(select(func.count()).select_from(Agent).where(Agent.status == status))
         agent_counts[status.value] = result.scalar_one()
 
     # Workflow counts by status
     workflow_counts = {}
     for status in [WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.RUNNING, WorkflowStatus.PENDING]:
-        result = await session.execute(
-            select(func.count()).select_from(Workflow).where(Workflow.status == status)
-        )
+        result = await session.execute(select(func.count()).select_from(Workflow).where(Workflow.status == status))
         workflow_counts[status.value] = result.scalar_one()
 
     # Task counts
@@ -88,6 +84,7 @@ async def prometheus_metrics(
     # WebSocket connections
     try:
         from app.api.websocket import get_ws_manager
+
         ws_status = get_ws_manager().get_status()
     except Exception:
         ws_status = {"total_connections": 0}

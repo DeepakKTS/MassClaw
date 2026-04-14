@@ -3,6 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+# Import TYPE_CHECKING to avoid circular imports
+from typing import TYPE_CHECKING
+
 from sqlalchemy import (
     DateTime,
     Float,
@@ -18,15 +21,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import pg_enum
 from app.models.base import AgentStatus, AuditMixin, Base
 
-# Import TYPE_CHECKING to avoid circular imports
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
-    from app.models.audit import AuditLog
     from app.models.score import AgentScore
     from app.models.task import Task
     from app.models.trust import TrustEvent
-    from app.models.wallet import WalletEvent
 
 
 class Agent(Base, AuditMixin):
@@ -88,12 +86,8 @@ class Agent(Base, AuditMixin):
         server_default=text("'active'"),
         index=True,
     )
-    health_check_url: Mapped[str | None] = mapped_column(
-        String(2048), nullable=True
-    )
-    last_health_check: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    health_check_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,
@@ -102,9 +96,7 @@ class Agent(Base, AuditMixin):
     )
 
     # Relationships
-    tasks: Mapped[list[Task]] = relationship(
-        back_populates="agent", lazy="selectin"
-    )
+    tasks: Mapped[list[Task]] = relationship(back_populates="agent", lazy="selectin")
     trust_events: Mapped[list[TrustEvent]] = relationship(
         back_populates="agent",
         lazy="selectin",

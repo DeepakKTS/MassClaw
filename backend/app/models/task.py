@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     DateTime,
@@ -18,8 +19,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import pg_enum
 from app.models.base import AuditMixin, Base, TaskStatus
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
@@ -52,9 +51,7 @@ class Task(Base, AuditMixin):
         index=True,
     )
     step_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    capability: Mapped[str] = mapped_column(
-        String(100), nullable=False, index=True
-    )
+    capability: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[TaskStatus] = mapped_column(
         pg_enum(TaskStatus),
@@ -65,15 +62,9 @@ class Task(Base, AuditMixin):
     input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    retry_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
-    )
-    max_retries: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("3")
-    )
-    cost_used: Mapped[float] = mapped_column(
-        Numeric(12, 4), nullable=False, server_default=text("0")
-    )
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
+    cost_used: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False, server_default=text("0"))
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -82,9 +73,7 @@ class Task(Base, AuditMixin):
         ForeignKey("tasks.task_id", ondelete="SET NULL"),
         nullable=True,
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     workflow: Mapped[Workflow] = relationship(back_populates="tasks")

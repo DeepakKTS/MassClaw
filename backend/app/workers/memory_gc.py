@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
 
 async def run_memory_gc() -> dict:
     """Garbage collect expired and low-quality memory records."""
@@ -16,6 +18,7 @@ async def run_memory_gc() -> dict:
         async with db_session_context() as session:
             redis = get_redis_manager().get_cache_client()
             from app.services.memory_service import MemoryService
+
             service = MemoryService(session, redis)
             result = await service.garbage_collect()
             logger.info("memory_gc_complete", **result)

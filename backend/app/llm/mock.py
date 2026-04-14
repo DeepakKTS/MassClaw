@@ -292,19 +292,24 @@ class MockProvider(LLMProvider):
         """Select the appropriate mock response based on prompt content."""
         prompt_lower = prompt.lower()
         system_lower = (system or "").lower()
-        combined = prompt_lower + " " + system_lower
 
         # 0. Goal interpretation prompt
-        if "structured goal" in prompt_lower or "extract a structured goal" in prompt_lower or ("intent" in prompt_lower and "risk_level" in prompt_lower and "complexity" in prompt_lower):
-            return json.dumps({
-                "intent": "analyze",
-                "constraints": ["staffing levels", "budget limitations"],
-                "risk_level": "medium",
-                "expected_output_type": "report",
-                "complexity_estimate": "complex",
-                "domain_hint": "healthcare-operations",
-                "stop_conditions": ["comprehensive report generated"],
-            })
+        if (
+            "structured goal" in prompt_lower
+            or "extract a structured goal" in prompt_lower
+            or ("intent" in prompt_lower and "risk_level" in prompt_lower and "complexity" in prompt_lower)
+        ):
+            return json.dumps(
+                {
+                    "intent": "analyze",
+                    "constraints": ["staffing levels", "budget limitations"],
+                    "risk_level": "medium",
+                    "expected_output_type": "report",
+                    "complexity_estimate": "complex",
+                    "domain_hint": "healthcare-operations",
+                    "stop_conditions": ["comprehensive report generated"],
+                }
+            )
 
         # 1. Match by system prompt identity (most reliable)
         if "task decomposition engine" in system_lower or "decompose" in system_lower:
@@ -314,14 +319,18 @@ class MockProvider(LLMProvider):
             return MOCK_SYNTHESIS
 
         # 1b. Reflection prompt
-        if "quality evaluator" in prompt_lower or ("evaluate the outputs" in prompt_lower and "next action" in prompt_lower):
-            return json.dumps({
-                "should_continue": False,
-                "confidence": 0.85,
-                "issues": [],
-                "suggestions": [],
-                "action": "accept",
-            })
+        if "quality evaluator" in prompt_lower or (
+            "evaluate the outputs" in prompt_lower and "next action" in prompt_lower
+        ):
+            return json.dumps(
+                {
+                    "should_continue": False,
+                    "confidence": 0.85,
+                    "issues": [],
+                    "suggestions": [],
+                    "action": "accept",
+                }
+            )
 
         # 2. Fallback: keyword matching on prompt only
         if "decompose" in prompt_lower and "subtask" in prompt_lower:

@@ -1,4 +1,5 @@
 """Celery task for periodic trust score decay on inactive agents."""
+
 from __future__ import annotations
 
 from app.core.logging import get_logger

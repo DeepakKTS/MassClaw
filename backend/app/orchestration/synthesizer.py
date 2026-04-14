@@ -51,9 +51,7 @@ class OutputSynthesizer:
         outputs_parts: list[str] = []
         for node in dag.topological_sort():
             if node.output:
-                outputs_parts.append(
-                    f"### {node.capability} (Step {node.node_id})\n{node.output}"
-                )
+                outputs_parts.append(f"### {node.capability} (Step {node.node_id})\n{node.output}")
 
         if not outputs_parts:
             return {

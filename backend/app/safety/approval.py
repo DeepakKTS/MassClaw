@@ -9,8 +9,7 @@ in real time.
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -45,16 +44,10 @@ class ApprovalRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
     policy_rule: str
     status: str = "pending"  # pending | approved | denied | expired
-    requested_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    requested_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     decided_at: str | None = None
     decided_by: str | None = None
-    expires_at: str = Field(
-        default_factory=lambda: (
-            datetime.now(timezone.utc) + timedelta(seconds=300)
-        ).isoformat()
-    )
+    expires_at: str = Field(default_factory=lambda: (datetime.now(UTC) + timedelta(seconds=300)).isoformat())
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +114,7 @@ class ApprovalManager:
         ApprovalRequest
             The newly created request with status ``"pending"``.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=timeout_seconds)
 
         request = ApprovalRequest(
@@ -168,9 +161,7 @@ class ApprovalManager:
 
         return request
 
-    async def get_pending(
-        self, workflow_id: str | None = None
-    ) -> list[ApprovalRequest]:
+    async def get_pending(self, workflow_id: str | None = None) -> list[ApprovalRequest]:
         """Return all pending approval requests.
 
         Parameters
@@ -202,7 +193,7 @@ class ApprovalManager:
                 continue
 
             # Check wall-clock expiry.
-            if datetime.fromisoformat(request.expires_at) <= datetime.now(timezone.utc):
+            if datetime.fromisoformat(request.expires_at) <= datetime.now(UTC):
                 expired_ids.append(rid)
                 continue
 
@@ -217,9 +208,7 @@ class ApprovalManager:
 
         return results
 
-    async def approve(
-        self, request_id: str, decided_by: str
-    ) -> ApprovalRequest:
+    async def approve(self, request_id: str, decided_by: str) -> ApprovalRequest:
         """Mark a pending request as approved.
 
         Parameters
@@ -293,9 +282,7 @@ class ApprovalManager:
             raise ValueError(f"Approval request '{request_id}' not found or expired.")
         return ApprovalRequest.model_validate_json(raw)
 
-    async def wait_for_decision(
-        self, request_id: str, timeout: int = 300
-    ) -> ApprovalRequest:
+    async def wait_for_decision(self, request_id: str, timeout: int = 300) -> ApprovalRequest:
         """Poll Redis until a decision is made or the timeout elapses.
 
         Parameters
@@ -310,24 +297,22 @@ class ApprovalManager:
         ApprovalRequest
             The decided (or expired) request.
         """
-        deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout)
+        deadline = datetime.now(UTC) + timedelta(seconds=timeout)
 
-        while datetime.now(timezone.utc) < deadline:
+        while datetime.now(UTC) < deadline:
             raw: str | None = await self._redis.get(self._key(request_id))
 
             if raw is None:
                 # Key evicted -- treat as expired.
-                logger.warning(
-                    "approval_wait_expired_key_missing", request_id=request_id
-                )
+                logger.warning("approval_wait_expired_key_missing", request_id=request_id)
                 return ApprovalRequest(
                     request_id=request_id,
                     workflow_id="unknown",
                     action="unknown",
                     policy_rule="unknown",
                     status="expired",
-                    requested_at=datetime.now(timezone.utc).isoformat(),
-                    expires_at=datetime.now(timezone.utc).isoformat(),
+                    requested_at=datetime.now(UTC).isoformat(),
+                    expires_at=datetime.now(UTC).isoformat(),
                 )
 
             request = ApprovalRequest.model_validate_json(raw)
@@ -336,7 +321,7 @@ class ApprovalManager:
                 return request
 
             # Check if the request itself has expired.
-            if datetime.fromisoformat(request.expires_at) <= datetime.now(timezone.utc):
+            if datetime.fromisoformat(request.expires_at) <= datetime.now(UTC):
                 return await self._mark_expired(request)
 
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
@@ -354,8 +339,8 @@ class ApprovalManager:
                 action="unknown",
                 policy_rule="unknown",
                 status="expired",
-                requested_at=datetime.now(timezone.utc).isoformat(),
-                expires_at=datetime.now(timezone.utc).isoformat(),
+                requested_at=datetime.now(UTC).isoformat(),
+                expires_at=datetime.now(UTC).isoformat(),
             )
 
     # ------------------------------------------------------------------
@@ -378,12 +363,9 @@ class ApprovalManager:
         request = ApprovalRequest.model_validate_json(raw)
 
         if request.status != "pending":
-            raise ValueError(
-                f"Approval request '{request_id}' is already '{request.status}', "
-                "cannot change decision."
-            )
+            raise ValueError(f"Approval request '{request_id}' is already '{request.status}', cannot change decision.")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         request.status = status
         request.decided_at = now.isoformat()
         request.decided_by = decided_by
@@ -425,7 +407,7 @@ class ApprovalManager:
     async def _mark_expired(self, request: ApprovalRequest) -> ApprovalRequest:
         """Transition a pending request to expired status."""
         request.status = "expired"
-        request.decided_at = datetime.now(timezone.utc).isoformat()
+        request.decided_at = datetime.now(UTC).isoformat()
 
         key = self._key(request.request_id)
         ttl: int = await self._redis.ttl(key)

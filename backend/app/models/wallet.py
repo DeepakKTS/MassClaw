@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     DateTime,
@@ -18,10 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import pg_enum
 from app.models.base import Base, WalletActionType
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
-    from app.models.agent import Agent
     from app.models.workflow import Workflow
 
 
@@ -45,15 +43,9 @@ class WalletEvent(Base):
         nullable=True,
         index=True,
     )
-    action_type: Mapped[WalletActionType] = mapped_column(
-        pg_enum(WalletActionType), nullable=False, index=True
-    )
-    credit_delta: Mapped[float] = mapped_column(
-        Numeric(12, 4), nullable=False
-    )
-    balance_after: Mapped[float] = mapped_column(
-        Numeric(12, 4), nullable=False
-    )
+    action_type: Mapped[WalletActionType] = mapped_column(pg_enum(WalletActionType), nullable=False, index=True)
+    credit_delta: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
+    balance_after: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_: Mapped[dict] = mapped_column(
         "metadata",
@@ -61,9 +53,7 @@ class WalletEvent(Base):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
-    idempotency_key: Mapped[str | None] = mapped_column(
-        String(255), nullable=True, unique=True, index=True
-    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("now()"),

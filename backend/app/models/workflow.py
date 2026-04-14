@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     DateTime,
@@ -17,10 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import pg_enum
 from app.models.base import AuditMixin, Base, WorkflowStatus
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
-    from app.models.audit import AuditLog
     from app.models.memory import MemoryRecord
     from app.models.task import Task
     from app.models.wallet import WalletEvent
@@ -34,57 +32,35 @@ class Workflow(Base, AuditMixin):
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
-    user_id: Mapped[str] = mapped_column(
-        String(255), nullable=False, index=True
-    )
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    domain: Mapped[str | None] = mapped_column(
-        String(100), nullable=True, index=True
-    )
+    domain: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     status: Mapped[WorkflowStatus] = mapped_column(
         pg_enum(WorkflowStatus),
         nullable=False,
         server_default=text("'pending'"),
         index=True,
     )
-    budget_limit: Mapped[float] = mapped_column(
-        Numeric(12, 4), nullable=False
-    )
+    budget_limit: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
     budget_used: Mapped[float] = mapped_column(
         Numeric(12, 4),
         nullable=False,
         server_default=text("0"),
     )
-    priority: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("5")
-    )
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
     metadata_: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
-    dag_snapshot: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
-    result: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
-    execution_mode: Mapped[str | None] = mapped_column(
-        String(50), nullable=True
-    )
-    goal_snapshot: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
-    reasoning_summary: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    dag_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    execution_mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    goal_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reasoning_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     tasks: Mapped[list[Task]] = relationship(

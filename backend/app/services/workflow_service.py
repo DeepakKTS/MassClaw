@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import func, select
@@ -9,13 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.exceptions import NotFoundError, OrchestrationError
-from app.models.agent import Agent
 from app.models.base import TaskStatus, WorkflowStatus
 from app.models.task import Task
 from app.models.workflow import Workflow
-from app.orchestration.decomposer import TaskDecomposer
-from app.orchestration.scheduler import WorkflowScheduler
-from app.orchestration.selector import AgentSelector
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.workflow import (
     WorkflowCreate,
@@ -80,13 +76,13 @@ class WorkflowService:
 
             # 4. Execute via strategy router
             router = StrategyRouter(self.session, self.redis)
-            result = await router.execute(plan, workflow)
+            await router.execute(plan, workflow)
 
             return workflow
 
         except Exception as e:
             workflow.status = WorkflowStatus.FAILED
-            workflow.completed_at = datetime.now(timezone.utc)
+            workflow.completed_at = datetime.now(UTC)
             workflow.result = {"error": str(e)}
             await self.session.flush()
             logger.error("workflow_failed", workflow_id=str(workflow.workflow_id), error=str(e))
@@ -94,9 +90,7 @@ class WorkflowService:
 
     async def get_workflow(self, workflow_id: uuid.UUID) -> Workflow:
         """Get a workflow by ID."""
-        result = await self.session.execute(
-            select(Workflow).where(Workflow.workflow_id == workflow_id)
-        )
+        result = await self.session.execute(select(Workflow).where(Workflow.workflow_id == workflow_id))
         workflow = result.scalar_one_or_none()
         if workflow is None:
             raise NotFoundError("Workflow", str(workflow_id))
@@ -123,9 +117,9 @@ class WorkflowService:
 
         elapsed = None
         if workflow.started_at:
-            end = workflow.completed_at or datetime.now(timezone.utc)
+            end = workflow.completed_at or datetime.now(UTC)
             if workflow.started_at.tzinfo is None:
-                started = workflow.started_at.replace(tzinfo=timezone.utc)
+                started = workflow.started_at.replace(tzinfo=UTC)
             else:
                 started = workflow.started_at
             elapsed = (end - started).total_seconds()
@@ -182,7 +176,7 @@ class WorkflowService:
             raise OrchestrationError(f"Cannot cancel workflow in status {workflow.status.value}")
 
         workflow.status = WorkflowStatus.CANCELLED
-        workflow.completed_at = datetime.now(timezone.utc)
+        workflow.completed_at = datetime.now(UTC)
         await self.session.flush()
 
         logger.info("workflow_cancelled", workflow_id=str(workflow_id))
@@ -205,9 +199,7 @@ class WorkflowService:
         total = total_result.scalar_one()
 
         result = await self.session.execute(
-            query.order_by(Workflow.created_at.desc())
-            .offset(pagination.offset)
-            .limit(pagination.page_size)
+            query.order_by(Workflow.created_at.desc()).offset(pagination.offset).limit(pagination.page_size)
         )
         workflows = list(result.scalars().all())
 

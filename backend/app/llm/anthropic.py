@@ -140,9 +140,7 @@ class AnthropicProvider(LLMProvider):
                 wait_seconds=round(retry_state.next_action.sleep, 1)  # type: ignore[union-attr]
                 if retry_state.next_action
                 else 0,
-                error=str(retry_state.outcome.exception())
-                if retry_state.outcome
-                else "unknown",
+                error=str(retry_state.outcome.exception()) if retry_state.outcome else "unknown",
             ),
             reraise=True,
         )

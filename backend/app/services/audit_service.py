@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.events import EventBus
 from app.core.logging import get_logger
 from app.models.audit import AuditLog
 from app.models.base import ActorType, AuditEventType
@@ -57,7 +56,7 @@ class AuditService:
         record is written synchronously to the database as a fallback.
         """
         log_id = uuid.uuid4()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         meta = metadata or {}
 
         payload = {
@@ -135,7 +134,7 @@ class AuditService:
         """Direct database write — use when Redis queue is not available or
         when the caller needs a guaranteed-persisted record."""
         log_id = uuid.uuid4()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         meta = metadata or {}
 
         return await self._write_to_db(
@@ -238,13 +237,10 @@ class AuditService:
 
         Returns a dict mapping event-type value strings to their counts.
         """
-        query = (
-            select(
-                AuditLog.event_type,
-                func.count().label("cnt"),
-            )
-            .group_by(AuditLog.event_type)
-        )
+        query = select(
+            AuditLog.event_type,
+            func.count().label("cnt"),
+        ).group_by(AuditLog.event_type)
 
         conditions: list = []
         if workflow_id is not None:

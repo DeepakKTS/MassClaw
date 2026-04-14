@@ -8,7 +8,7 @@ across the MassClaw agent orchestration pipeline.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 from uuid import uuid4
 
@@ -53,6 +53,7 @@ class InjectionAssessment:
 # ---------------------------------------------------------------------------
 # Heuristic patterns
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class _HeuristicPattern:
@@ -386,7 +387,7 @@ class InjectionDetector:
             score = max(0.0, min(max_similarity, 1.0))
 
             if score >= SEMANTIC_THRESHOLD:
-                details = f"High similarity ({score:.3f}) to: \"{most_similar_text[:80]}\""
+                details = f'High similarity ({score:.3f}) to: "{most_similar_text[:80]}"'
             elif score >= 0.4:
                 details = f"Moderate similarity ({score:.3f}) to known injection patterns."
             else:

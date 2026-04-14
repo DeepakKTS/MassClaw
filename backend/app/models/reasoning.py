@@ -14,11 +14,15 @@ class ReasoningTrace(Base):
     __tablename__ = "reasoning_traces"
 
     trace_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"),
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
     )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("workflows.workflow_id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        UUID(as_uuid=True),
+        ForeignKey("workflows.workflow_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     iteration: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     phase: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -26,10 +30,15 @@ class ReasoningTrace(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     metadata_: Mapped[dict] = mapped_column(
-        "metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"),
+        "metadata",
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("now()"), nullable=False,
+        DateTime(timezone=True),
+        server_default=text("now()"),
+        nullable=False,
     )
 
     def __repr__(self) -> str:

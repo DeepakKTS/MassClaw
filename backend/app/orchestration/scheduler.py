@@ -1,36 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import time
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import update
+import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import redis.asyncio as aioredis
-
-from app.config import get_settings
 from app.core.events import EventBus
 from app.core.logging import get_logger
-from app.exceptions import AgentUnavailableError, BudgetExhaustedError
+from app.exceptions import BudgetExhaustedError
 from app.llm.base import LLMResponse
 from app.llm.router import get_model_router
 from app.llm.token_counter import tokens_to_credits
 from app.models.agent import Agent
-from app.models.base import TaskStatus, WorkflowStatus
+from app.models.base import MemoryType, TaskStatus, WorkflowStatus
 from app.models.task import Task
 from app.models.workflow import Workflow
 from app.orchestration.dag import DAG, DAGNode
 from app.orchestration.selector import AgentSelector
 from app.orchestration.synthesizer import OutputSynthesizer
 from app.schemas.memory import MemoryWriteRequest
-from app.models.base import MemoryType
+from app.schemas.trust import TrustScoreInput
 from app.services.memory_service import MemoryService
 from app.services.trust_service import TrustService
 from app.services.wallet_service import WalletService
-from app.schemas.trust import TrustScoreInput
 
 logger = get_logger(__name__)
 
@@ -83,8 +77,7 @@ AGENT_PROMPTS: dict[str, str] = {
         "and recommend remediation actions."
     ),
     "safety-analysis": (
-        "You are a safety analysis specialist. Evaluate potential safety hazards and "
-        "recommend preventive measures."
+        "You are a safety analysis specialist. Evaluate potential safety hazards and recommend preventive measures."
     ),
     "optimization": (
         "You are an optimization specialist. Propose concrete improvements for efficiency, "
@@ -103,12 +96,10 @@ AGENT_PROMPTS: dict[str, str] = {
         "and evaluate budget implications of proposed changes."
     ),
     "budget-estimation": (
-        "You are a budget estimation specialist. Create detailed cost projections "
-        "for proposed initiatives."
+        "You are a budget estimation specialist. Create detailed cost projections for proposed initiatives."
     ),
     "roi-projection": (
-        "You are an ROI specialist. Calculate return on investment for proposed changes "
-        "with confidence intervals."
+        "You are an ROI specialist. Calculate return on investment for proposed changes with confidence intervals."
     ),
     "summarization": (
         "You are a synthesis specialist. Integrate all findings into a clear, "
@@ -119,8 +110,7 @@ AGENT_PROMPTS: dict[str, str] = {
         "report from the collected findings."
     ),
     "executive-brief": (
-        "You are an executive briefing specialist. Create a concise, high-impact "
-        "brief for senior leadership."
+        "You are an executive briefing specialist. Create a concise, high-impact brief for senior leadership."
     ),
     "verification": (
         "You are a quality verification specialist. Cross-check all outputs for "
@@ -194,7 +184,7 @@ class WorkflowScheduler:
         4. Finally: synthesize outputs into final result
         """
         workflow.status = WorkflowStatus.RUNNING
-        workflow.started_at = datetime.now(timezone.utc)
+        workflow.started_at = datetime.now(UTC)
         workflow.dag_snapshot = dag.to_dict()
         await self.session.flush()
 
@@ -219,7 +209,8 @@ class WorkflowScheduler:
                 estimated_cost = self._estimate_node_cost(agent)
                 try:
                     reservation = await self.wallet_service.reserve_budget(
-                        workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
+                        workflow_id=workflow.workflow_id,
+                        agent_id=agent.agent_id,
                         estimated_cost=estimated_cost,
                         reason=f"Task {node.node_id}: {node.capability}",
                     )
@@ -241,7 +232,12 @@ class WorkflowScheduler:
                     )
                     self.session.add(failed_task)
                     await self.session.flush()
-                    logger.warning("task_budget_insufficient", node_id=node.node_id, capability=node.capability, estimated_cost=estimated_cost)
+                    logger.warning(
+                        "task_budget_insufficient",
+                        node_id=node.node_id,
+                        capability=node.capability,
+                        estimated_cost=estimated_cost,
+                    )
                     continue
 
                 dag.mark_running(node.node_id)
@@ -268,14 +264,25 @@ class WorkflowScheduler:
             # Phase 2: Run LLM calls in parallel (budget already reserved)
             # Tiered Model Cascade: Haiku for simple tasks, Sonnet for complex/verification
             HAIKU_CAPABILITIES = {
-                "intake", "classify", "extract-requirements", "data-retrieval",
-                "literature-review", "summarization",
+                "intake",
+                "classify",
+                "extract-requirements",
+                "data-retrieval",
+                "literature-review",
+                "summarization",
             }
             SONNET_CAPABILITIES = {
-                "verification", "quality-check", "consistency-audit",
-                "risk-assessment", "compliance-check", "safety-analysis",
-                "optimization", "process-analysis", "report-generation",
-                "executive-brief", "cost-analysis",
+                "verification",
+                "quality-check",
+                "consistency-audit",
+                "risk-assessment",
+                "compliance-check",
+                "safety-analysis",
+                "optimization",
+                "process-analysis",
+                "report-generation",
+                "executive-brief",
+                "cost-analysis",
             }
 
             async def _llm_call(node: DAGNode) -> tuple[DAGNode, LLMResponse | Exception]:
@@ -303,8 +310,11 @@ class WorkflowScheduler:
 
                 try:
                     resp = await self.model_router.generate(
-                        prompt=user_prompt, system=system_prompt,
-                        model=model, max_tokens=max_tok, temperature=0.4,
+                        prompt=user_prompt,
+                        system=system_prompt,
+                        model=model,
+                        max_tokens=max_tok,
+                        temperature=0.4,
                     )
                     # Cache the result for future similar queries
                     await self._store_in_cache(node, user_prompt, resp)
@@ -318,7 +328,6 @@ class WorkflowScheduler:
             # Phase 3: Process results — charge actual cost (reservation already done)
             for node, resp_or_err in llm_results:
                 task_rec, agent, context = node_contexts[node.node_id]
-                start_time = task_rec.created_at
 
                 if isinstance(resp_or_err, Exception):
                     task_rec.status = TaskStatus.FAILED
@@ -338,7 +347,7 @@ class WorkflowScheduler:
                     continue
 
                 response: LLMResponse = resp_or_err
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 latency_ms = response.latency_ms
 
                 charged = False
@@ -349,7 +358,8 @@ class WorkflowScheduler:
                     idem_key = f"{workflow.workflow_id}:{node.node_id}:charge"
                     if reservation:
                         await self.wallet_service.charge(
-                            workflow_id=workflow.workflow_id, agent_id=agent.agent_id,
+                            workflow_id=workflow.workflow_id,
+                            agent_id=agent.agent_id,
                             actual_cost=actual_credits,
                             reservation_event_id=reservation.wallet_event_id,
                             reason=f"Task {node.node_id} completed: {response.total_tokens} tokens",
@@ -376,12 +386,14 @@ class WorkflowScheduler:
                     await self.trust_service.record_trust_event(
                         agent_id=agent.agent_id,
                         scores=TrustScoreInput(
-                            quality_score=quality_score, latency_score=latency_score,
+                            quality_score=quality_score,
+                            latency_score=latency_score,
                             cost_score=cost_score,
                             consistency_score=await self.trust_service.compute_consistency_score(agent.agent_id),
                             reliability_score=await self.trust_service.compute_reliability_score(agent.agent_id),
                         ),
-                        workflow_id=workflow.workflow_id, task_id=task_rec.task_id,
+                        workflow_id=workflow.workflow_id,
+                        task_id=task_rec.task_id,
                     )
 
                     # Mark completed
@@ -400,6 +412,7 @@ class WorkflowScheduler:
                     if node.capability in HIGH_RISK_CAPABILITIES:
                         try:
                             from app.services.consensus_service import ConsensusService
+
                             consensus_svc = ConsensusService(session=self.session)
                             consensus = await consensus_svc.verify_with_consensus(
                                 output=response.content,
@@ -421,7 +434,11 @@ class WorkflowScheduler:
                             logger.warning("consensus_verification_skipped", error=str(e))
 
                     await self._publish_progress(
-                        workflow, dag, "task_completed", node=node, agent=agent,
+                        workflow,
+                        dag,
+                        "task_completed",
+                        node=node,
+                        agent=agent,
                         extra={
                             "latency_ms": round(latency_ms, 1),
                             "cost_credits": round(actual_credits, 4),
@@ -431,9 +448,13 @@ class WorkflowScheduler:
                         },
                     )
                     logger.info(
-                        "task_completed", workflow_id=str(workflow.workflow_id),
-                        node_id=node.node_id, capability=node.capability, agent=agent.name,
-                        latency_ms=round(latency_ms, 1), tokens=response.total_tokens,
+                        "task_completed",
+                        workflow_id=str(workflow.workflow_id),
+                        node_id=node.node_id,
+                        capability=node.capability,
+                        agent=agent.name,
+                        latency_ms=round(latency_ms, 1),
+                        tokens=response.total_tokens,
                     )
 
                 except Exception as e:
@@ -484,7 +505,7 @@ class WorkflowScheduler:
 
         if synthesis_failed:
             final_result["synthesis_failed"] = True
-        workflow.completed_at = datetime.now(timezone.utc)
+        workflow.completed_at = datetime.now(UTC)
         workflow.result = final_result
         workflow.dag_snapshot = dag.to_dict()
         await self.session.flush()
@@ -544,9 +565,7 @@ class WorkflowScheduler:
 
         context_parts = []
         for r in results:
-            context_parts.append(
-                f"[{r.memory.memory_type} | similarity={r.similarity}]\n{r.memory.content}"
-            )
+            context_parts.append(f"[{r.memory.memory_type} | similarity={r.similarity}]\n{r.memory.content}")
 
         return "\n\n---\n\n".join(context_parts)
 
@@ -610,8 +629,9 @@ class WorkflowScheduler:
         Returns a synthetic LLMResponse if a high-similarity match is found.
         """
         try:
-            from app.embeddings.service import get_embedding_service
             from sqlalchemy import text
+
+            from app.embeddings.service import get_embedding_service
 
             embedding_svc = get_embedding_service()
             if not embedding_svc or not embedding_svc.is_loaded:
@@ -680,7 +700,8 @@ class WorkflowScheduler:
             # Generate embedding of the prompt (not the response) for lookup matching
             prompt_embedding = await embedding_svc.embed(prompt[:500])
 
-            from app.models.memory import MemoryRecord, MemoryType as MemType
+            from app.models.memory import MemoryRecord
+            from app.models.memory import MemoryType as MemType
 
             cache_record = MemoryRecord(
                 workflow_id=None,  # Cache entries are cross-workflow

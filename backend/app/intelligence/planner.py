@@ -20,16 +20,19 @@ class ExecutionMode(str, Enum):
 
 class ExecutionPlan(BaseModel):
     """Execution strategy determined by the planner."""
+
     mode: ExecutionMode
     goal: StructuredGoal
     max_iterations: int = 5
     confidence_threshold: float = 0.8
-    budget_allocation: dict[str, float] = Field(default_factory=lambda: {
-        "execution": 0.70,
-        "reflection": 0.10,
-        "verification": 0.10,
-        "synthesis": 0.10,
-    })
+    budget_allocation: dict[str, float] = Field(
+        default_factory=lambda: {
+            "execution": 0.70,
+            "reflection": 0.10,
+            "verification": 0.10,
+            "synthesis": 0.10,
+        }
+    )
     reasoning: str = ""  # Why this mode was chosen
 
 
@@ -44,8 +47,11 @@ class AdaptivePlanner:
             mode = ExecutionMode.DIRECT_RESPONSE
             reasoning = "Simple, low-risk request → direct LLM response without multi-agent orchestration"
             plan = ExecutionPlan(
-                mode=mode, goal=goal, max_iterations=1,
-                confidence_threshold=0.5, reasoning=reasoning,
+                mode=mode,
+                goal=goal,
+                max_iterations=1,
+                confidence_threshold=0.5,
+                reasoning=reasoning,
                 budget_allocation={"execution": 0.90, "synthesis": 0.10},
             )
             logger.info("plan_selected", mode=mode.value, reasoning=reasoning)
@@ -56,8 +62,11 @@ class AdaptivePlanner:
             mode = ExecutionMode.VERIFY_AND_REFINE
             reasoning = "High-risk request → DAG pipeline with mandatory verification pass"
             plan = ExecutionPlan(
-                mode=mode, goal=goal, max_iterations=3,
-                confidence_threshold=0.9, reasoning=reasoning,
+                mode=mode,
+                goal=goal,
+                max_iterations=3,
+                confidence_threshold=0.9,
+                reasoning=reasoning,
                 budget_allocation={"execution": 0.55, "reflection": 0.10, "verification": 0.25, "synthesis": 0.10},
             )
             logger.info("plan_selected", mode=mode.value, reasoning=reasoning)
@@ -68,8 +77,11 @@ class AdaptivePlanner:
             mode = ExecutionMode.EXPLORE_AND_PRUNE
             reasoning = "Comparison request → explore multiple approaches in parallel, select best"
             plan = ExecutionPlan(
-                mode=mode, goal=goal, max_iterations=2,
-                confidence_threshold=0.7, reasoning=reasoning,
+                mode=mode,
+                goal=goal,
+                max_iterations=2,
+                confidence_threshold=0.7,
+                reasoning=reasoning,
                 budget_allocation={"execution": 0.65, "reflection": 0.15, "verification": 0.10, "synthesis": 0.10},
             )
             logger.info("plan_selected", mode=mode.value, reasoning=reasoning)
@@ -80,8 +92,11 @@ class AdaptivePlanner:
             mode = ExecutionMode.ITERATIVE
             reasoning = f"{goal.intent} with moderate complexity → iterative agent-reflect loop"
             plan = ExecutionPlan(
-                mode=mode, goal=goal, max_iterations=5,
-                confidence_threshold=0.8, reasoning=reasoning,
+                mode=mode,
+                goal=goal,
+                max_iterations=5,
+                confidence_threshold=0.8,
+                reasoning=reasoning,
                 budget_allocation={"execution": 0.60, "reflection": 0.20, "verification": 0.05, "synthesis": 0.15},
             )
             logger.info("plan_selected", mode=mode.value, reasoning=reasoning)
@@ -91,8 +106,11 @@ class AdaptivePlanner:
         mode = ExecutionMode.DAG_PIPELINE
         reasoning = "Standard request → classic DAG decomposition and parallel execution"
         plan = ExecutionPlan(
-            mode=mode, goal=goal, max_iterations=1,
-            confidence_threshold=0.7, reasoning=reasoning,
+            mode=mode,
+            goal=goal,
+            max_iterations=1,
+            confidence_threshold=0.7,
+            reasoning=reasoning,
         )
         logger.info("plan_selected", mode=mode.value, reasoning=reasoning)
         return plan

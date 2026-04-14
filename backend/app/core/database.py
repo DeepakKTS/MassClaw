@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import enum
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-import enum
-
-from sqlalchemy import Enum as SAEnum, MetaData, String
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,

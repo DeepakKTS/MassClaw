@@ -18,9 +18,7 @@ class MemoryWriteRequest(BaseModel):
     confidence: float = Field(default=0.8, ge=0, le=1)
     metadata: dict = Field(default_factory=dict)
     parent_version_id: uuid.UUID | None = None
-    ttl_hours: int | None = Field(
-        default=None, ge=1, description="Time-to-live in hours"
-    )
+    ttl_hours: int | None = Field(default=None, ge=1, description="Time-to-live in hours")
 
 
 class MemoryQueryRequest(BaseModel):

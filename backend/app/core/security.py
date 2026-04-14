@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
@@ -31,7 +31,7 @@ def create_access_token(
 ) -> str:
     """Create a JWT access token."""
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if expires_delta is None:
         expires_delta = timedelta(minutes=settings.jwt_expiry_minutes)

@@ -109,9 +109,9 @@ def tokens_to_credits(cost_usd: Decimal) -> float:
     return float(cost_usd / Decimal("0.001"))
 
 
-def credits_to_usd(credits: float) -> Decimal:
+def credits_to_usd(credit_amount: float) -> Decimal:
     """Convert MassClaw credits to USD."""
-    return Decimal(str(credits)) * Decimal("0.001")
+    return Decimal(str(credit_amount)) * Decimal("0.001")
 
 
 def get_model_pricing(model: str) -> dict[str, float]:

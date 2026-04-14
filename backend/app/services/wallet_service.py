@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from decimal import Decimal
 
 import redis.asyncio as aioredis
@@ -12,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.events import EventBus
 from app.core.logging import get_logger
 from app.exceptions import BudgetExhaustedError, NotFoundError, ValidationError
-from app.models.base import WalletActionType, WorkflowStatus
+from app.models.base import WalletActionType
 from app.models.wallet import WalletEvent
 from app.models.workflow import Workflow
 from app.schemas.common import PaginatedResponse, PaginationParams
@@ -109,9 +108,7 @@ class WalletService:
 
         # Lock the workflow row to prevent concurrent reservation races
         result = await self.session.execute(
-            select(Workflow)
-            .where(Workflow.workflow_id == workflow_id)
-            .with_for_update()
+            select(Workflow).where(Workflow.workflow_id == workflow_id).with_for_update()
         )
         workflow = result.scalar_one_or_none()
         if workflow is None:
@@ -261,9 +258,7 @@ class WalletService:
 
         # Update workflow budget_used and sync ORM object
         await self.session.execute(
-            update(Workflow)
-            .where(Workflow.workflow_id == workflow_id)
-            .values(budget_used=Decimal(str(new_balance)))
+            update(Workflow).where(Workflow.workflow_id == workflow_id).values(budget_used=Decimal(str(new_balance)))
         )
 
         await self.session.flush()
@@ -380,7 +375,7 @@ class WalletService:
         reason: str,
     ) -> WalletEvent:
         """Add credits to a workflow (top-up, refund, initial funding)."""
-        workflow = await self._get_workflow(workflow_id)
+        await self._get_workflow(workflow_id)  # Validate workflow exists
 
         budget_used = await self._compute_balance_from_events(workflow_id)
         new_balance = max(0, budget_used - amount)
@@ -414,9 +409,7 @@ class WalletService:
             conditions.append(WalletEvent.action_type == action_type)
 
         count_result = await self.session.execute(
-            select(func.count())
-            .select_from(WalletEvent)
-            .where(and_(*conditions))
+            select(func.count()).select_from(WalletEvent).where(and_(*conditions))
         )
         total = count_result.scalar_one()
 
@@ -439,9 +432,7 @@ class WalletService:
     # --- Private helpers ---
 
     async def _get_workflow(self, workflow_id: uuid.UUID) -> Workflow:
-        result = await self.session.execute(
-            select(Workflow).where(Workflow.workflow_id == workflow_id)
-        )
+        result = await self.session.execute(select(Workflow).where(Workflow.workflow_id == workflow_id))
         workflow = result.scalar_one_or_none()
         if workflow is None:
             raise NotFoundError("Workflow", str(workflow_id))
@@ -456,15 +447,11 @@ class WalletService:
         result = await self.session.execute(
             select(
                 func.coalesce(
-                    func.sum(WalletEvent.credit_delta).filter(
-                        WalletEvent.action_type == WalletActionType.DEBIT
-                    ),
+                    func.sum(WalletEvent.credit_delta).filter(WalletEvent.action_type == WalletActionType.DEBIT),
                     0,
                 ).label("total_debits"),
                 func.coalesce(
-                    func.sum(WalletEvent.credit_delta).filter(
-                        WalletEvent.action_type == WalletActionType.CREDIT
-                    ),
+                    func.sum(WalletEvent.credit_delta).filter(WalletEvent.action_type == WalletActionType.CREDIT),
                     0,
                 ).label("total_credits"),
             ).where(WalletEvent.workflow_id == workflow_id)
@@ -488,9 +475,7 @@ class WalletService:
                     0,
                 ).label("total_reserved"),
                 func.coalesce(
-                    func.sum(WalletEvent.credit_delta).filter(
-                        WalletEvent.action_type == WalletActionType.RELEASE
-                    ),
+                    func.sum(WalletEvent.credit_delta).filter(WalletEvent.action_type == WalletActionType.RELEASE),
                     0,
                 ).label("total_released"),
             ).where(WalletEvent.workflow_id == workflow_id)
@@ -499,15 +484,9 @@ class WalletService:
         outstanding = float(row.total_reserved) - float(row.total_released)
         return max(0, outstanding)
 
-    async def _find_by_idempotency_key(
-        self, idempotency_key: str
-    ) -> WalletEvent | None:
+    async def _find_by_idempotency_key(self, idempotency_key: str) -> WalletEvent | None:
         """Look up a WalletEvent by its idempotency key."""
-        result = await self.session.execute(
-            select(WalletEvent).where(
-                WalletEvent.idempotency_key == idempotency_key
-            )
-        )
+        result = await self.session.execute(select(WalletEvent).where(WalletEvent.idempotency_key == idempotency_key))
         return result.scalar_one_or_none()
 
     async def _invalidate_cache(self, workflow_id: uuid.UUID) -> None:

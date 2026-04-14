@@ -45,10 +45,7 @@ MODEL_REGISTRY: dict[str, EmbeddingModelInfo] = {
 def get_model_info(model_name: str) -> EmbeddingModelInfo:
     """Look up model info from the registry."""
     if model_name not in MODEL_REGISTRY:
-        raise ValueError(
-            f"Unknown embedding model '{model_name}'. "
-            f"Available: {', '.join(MODEL_REGISTRY.keys())}"
-        )
+        raise ValueError(f"Unknown embedding model '{model_name}'. Available: {', '.join(MODEL_REGISTRY.keys())}")
     return MODEL_REGISTRY[model_name]
 
 

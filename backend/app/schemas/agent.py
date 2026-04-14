@@ -11,21 +11,11 @@ from app.models.base import AgentStatus
 class AgentCreate(BaseModel):
     """Request schema for registering a new agent."""
 
-    name: str = Field(
-        ..., min_length=3, max_length=255, description="Unique agent name"
-    )
-    description: str = Field(
-        ..., min_length=10, max_length=5000, description="Agent description"
-    )
-    capabilities: list[str] = Field(
-        ..., min_length=1, description="List of capabilities"
-    )
-    endpoint: str = Field(
-        ..., max_length=2048, description="Agent endpoint URL or handler ID"
-    )
-    supported_tools: list[str] = Field(
-        default_factory=list, description="Tools this agent can use"
-    )
+    name: str = Field(..., min_length=3, max_length=255, description="Unique agent name")
+    description: str = Field(..., min_length=10, max_length=5000, description="Agent description")
+    capabilities: list[str] = Field(..., min_length=1, description="List of capabilities")
+    endpoint: str = Field(..., max_length=2048, description="Agent endpoint URL or handler ID")
+    supported_tools: list[str] = Field(default_factory=list, description="Tools this agent can use")
     cost_profile: dict = Field(
         default_factory=dict,
         description="Cost profile: e.g. {'avg_cost_per_call': 0.01, 'model': 'claude-sonnet'}",
@@ -36,24 +26,16 @@ class AgentCreate(BaseModel):
     )
     version: str = Field(default="1.0.0", max_length=50)
     safety_level: int = Field(default=1, ge=1, le=10)
-    input_schema: dict | None = Field(
-        default=None, description="JSON Schema for agent input"
-    )
-    output_schema: dict | None = Field(
-        default=None, description="JSON Schema for agent output"
-    )
-    health_check_url: str | None = Field(
-        default=None, max_length=2048, description="URL for health checks"
-    )
+    input_schema: dict | None = Field(default=None, description="JSON Schema for agent input")
+    output_schema: dict | None = Field(default=None, description="JSON Schema for agent output")
+    health_check_url: str | None = Field(default=None, max_length=2048, description="URL for health checks")
     metadata: dict = Field(default_factory=dict)
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
         if not all(c.isalnum() or c in "-_ " for c in v):
-            raise ValueError(
-                "Name must contain only alphanumeric characters, hyphens, underscores, or spaces"
-            )
+            raise ValueError("Name must contain only alphanumeric characters, hyphens, underscores, or spaces")
         return v.strip()
 
     @field_validator("capabilities")
@@ -140,21 +122,11 @@ class AgentSummary(BaseModel):
 class AgentSearchParams(BaseModel):
     """Parameters for agent discovery search."""
 
-    capabilities: list[str] | None = Field(
-        default=None, description="Required capabilities"
-    )
-    status: AgentStatus | None = Field(
-        default=None, description="Filter by status"
-    )
-    min_trust: float | None = Field(
-        default=None, ge=0, le=1, description="Minimum trust score"
-    )
-    max_cost: float | None = Field(
-        default=None, ge=0, description="Maximum average cost per call"
-    )
-    name_query: str | None = Field(
-        default=None, max_length=255, description="Fuzzy name search"
-    )
+    capabilities: list[str] | None = Field(default=None, description="Required capabilities")
+    status: AgentStatus | None = Field(default=None, description="Filter by status")
+    min_trust: float | None = Field(default=None, ge=0, le=1, description="Minimum trust score")
+    max_cost: float | None = Field(default=None, ge=0, description="Maximum average cost per call")
+    name_query: str | None = Field(default=None, max_length=255, description="Fuzzy name search")
 
     @field_validator("capabilities")
     @classmethod

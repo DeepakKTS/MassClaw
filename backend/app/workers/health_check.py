@@ -9,13 +9,13 @@ Health check logic:
   - Success after degraded -> status = active (recovery), publish event
   - Update agent.last_health_check timestamp
 """
+
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.core.database import db_session_context, init_db
@@ -72,7 +72,7 @@ async def run_health_checks() -> dict:
 
                     healthy = await _check_agent_health(client, agent.health_check_url)
 
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
 
                     if healthy:
                         # Reset failure counter on success
@@ -81,9 +81,7 @@ async def run_health_checks() -> dict:
                         # Recovery: degraded -> active
                         if agent.status == AgentStatus.DEGRADED:
                             agent.status = AgentStatus.ACTIVE
-                            await _publish_health_event(
-                                agent, old_status, AgentStatus.ACTIVE, healthy=True
-                            )
+                            await _publish_health_event(agent, old_status, AgentStatus.ACTIVE, healthy=True)
                             logger.info(
                                 "agent_health_recovered",
                                 agent_id=str(agent.agent_id),
@@ -100,9 +98,7 @@ async def run_health_checks() -> dict:
                         if failures >= suspended_threshold and agent.status != AgentStatus.SUSPENDED:
                             # Suspend the agent
                             agent.status = AgentStatus.SUSPENDED
-                            await _publish_health_event(
-                                agent, old_status, AgentStatus.SUSPENDED, healthy=False
-                            )
+                            await _publish_health_event(agent, old_status, AgentStatus.SUSPENDED, healthy=False)
                             summary["suspended"] += 1
                             logger.warning(
                                 "agent_health_suspended",
@@ -113,9 +109,7 @@ async def run_health_checks() -> dict:
                         elif failures >= degraded_threshold and agent.status == AgentStatus.ACTIVE:
                             # Degrade the agent
                             agent.status = AgentStatus.DEGRADED
-                            await _publish_health_event(
-                                agent, old_status, AgentStatus.DEGRADED, healthy=False
-                            )
+                            await _publish_health_event(agent, old_status, AgentStatus.DEGRADED, healthy=False)
                             summary["degraded"] += 1
                             logger.warning(
                                 "agent_health_degraded",

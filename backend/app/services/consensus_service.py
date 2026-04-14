@@ -77,9 +77,7 @@ class ConsensusService:
 
         if not verifiers:
             logger.warning("no_verifier_agents_available")
-            return ConsensusResult(
-                agreed=True, weighted_agreement=1.0, verifier_count=0, details=[]
-            )
+            return ConsensusResult(agreed=True, weighted_agreement=1.0, verifier_count=0, details=[])
 
         # Ask each verifier to evaluate independently
         details = []
@@ -100,6 +98,7 @@ class ConsensusService:
 
                 # Parse JSON response
                 import json
+
                 try:
                     verdict = json.loads(response.content)
                 except json.JSONDecodeError:
@@ -110,14 +109,16 @@ class ConsensusService:
                 if verdict.get("agree", True):
                     weighted_agree += weight
 
-                details.append({
-                    "agent_id": str(verifier.agent_id),
-                    "agent_name": verifier.name,
-                    "agree": verdict.get("agree", True),
-                    "confidence": verdict.get("confidence", 0.5),
-                    "reasoning": verdict.get("reasoning", ""),
-                    "weight": round(weight, 4),
-                })
+                details.append(
+                    {
+                        "agent_id": str(verifier.agent_id),
+                        "agent_name": verifier.name,
+                        "agree": verdict.get("agree", True),
+                        "confidence": verdict.get("confidence", 0.5),
+                        "reasoning": verdict.get("reasoning", ""),
+                        "weight": round(weight, 4),
+                    }
+                )
 
             except Exception as e:
                 logger.warning("verifier_failed", agent=verifier.name, error=str(e))

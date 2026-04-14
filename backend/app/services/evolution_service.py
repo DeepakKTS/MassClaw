@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from sqlalchemy import and_, func, select, update
@@ -56,9 +56,7 @@ class EvolutionService:
         Computes the weighted composite and persists the record.
         """
         # Verify agent exists
-        agent_result = await self.session.execute(
-            select(Agent).where(Agent.agent_id == agent_id)
-        )
+        agent_result = await self.session.execute(select(Agent).where(Agent.agent_id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if agent is None:
             raise NotFoundError("Agent", str(agent_id))
@@ -112,15 +110,13 @@ class EvolutionService:
         """Get comprehensive evolution data for an agent: current scores,
         percentile ranking, trend analysis, and dimension breakdown."""
         # Verify agent
-        agent_result = await self.session.execute(
-            select(Agent).where(Agent.agent_id == agent_id)
-        )
+        agent_result = await self.session.execute(select(Agent).where(Agent.agent_id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if agent is None:
             raise NotFoundError("Agent", str(agent_id))
 
         # Current dimension averages (last 30 days)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         thirty_days_ago = now - timedelta(days=30)
 
         avg_result = await self.session.execute(
@@ -193,16 +189,12 @@ class EvolutionService:
     ) -> PaginatedResponse[AgentScoreResponse]:
         """Get paginated score history for an agent."""
         # Verify agent
-        agent_result = await self.session.execute(
-            select(Agent.agent_id).where(Agent.agent_id == agent_id)
-        )
+        agent_result = await self.session.execute(select(Agent.agent_id).where(Agent.agent_id == agent_id))
         if agent_result.scalar_one_or_none() is None:
             raise NotFoundError("Agent", str(agent_id))
 
         count_result = await self.session.execute(
-            select(func.count())
-            .select_from(AgentScore)
-            .where(AgentScore.agent_id == agent_id)
+            select(func.count()).select_from(AgentScore).where(AgentScore.agent_id == agent_id)
         )
         total = count_result.scalar_one()
 
@@ -245,6 +237,7 @@ class EvolutionService:
         if capability:
             from sqlalchemy import cast
             from sqlalchemy.dialects.postgresql import JSONB
+
             query = query.where(Agent.capabilities.op("@>")(cast([capability], JSONB)))
 
         query = query.order_by(func.coalesce(func.avg(AgentScore.composite), 0).desc())
@@ -256,7 +249,7 @@ class EvolutionService:
         # Compute delta from previous period (7 days ago)
         rankings: list[AgentRanking] = []
         for rank, row in enumerate(rows, start=1):
-            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            seven_days_ago = datetime.now(UTC) - timedelta(days=7)
             prev_result = await self.session.execute(
                 select(func.avg(AgentScore.composite)).where(
                     and_(
@@ -365,9 +358,7 @@ class EvolutionService:
         """Compute the percentile ranking of an agent among all scored agents."""
         # Get this agent's average composite
         my_result = await self.session.execute(
-            select(func.avg(AgentScore.composite)).where(
-                AgentScore.agent_id == agent_id
-            )
+            select(func.avg(AgentScore.composite)).where(AgentScore.agent_id == agent_id)
         )
         my_avg = my_result.scalar_one()
         if my_avg is None:
@@ -375,8 +366,7 @@ class EvolutionService:
 
         # Count agents with lower average composite
         total_result = await self.session.execute(
-            select(func.count(func.distinct(AgentScore.agent_id)))
-            .select_from(AgentScore)
+            select(func.count(func.distinct(AgentScore.agent_id))).select_from(AgentScore)
         )
         total_agents = total_result.scalar_one()
 

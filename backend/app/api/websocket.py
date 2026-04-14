@@ -51,11 +51,13 @@ class ConnectionManager:
         )
 
         # Send welcome message
-        await websocket.send_json({
-            "type": "connected",
-            "workflow_id": workflow_id,
-            "message": "Connected to MassClaw workflow stream",
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "workflow_id": workflow_id,
+                "message": "Connected to MassClaw workflow stream",
+            }
+        )
 
     def disconnect(self, websocket: WebSocket, workflow_id: str) -> None:
         """Remove a WebSocket connection."""
@@ -89,10 +91,7 @@ class ConnectionManager:
     def get_status(self) -> dict:
         return {
             "total_connections": self.total_connections,
-            "workflows": {
-                wf_id: len(conns)
-                for wf_id, conns in self._connections.items()
-            },
+            "workflows": {wf_id: len(conns) for wf_id, conns in self._connections.items()},
         }
 
 
@@ -124,12 +123,8 @@ async def workflow_websocket(websocket: WebSocket, workflow_id: str) -> None:
     await manager.connect(websocket, workflow_id)
 
     # Start background tasks for this connection
-    pubsub_task = asyncio.create_task(
-        _bridge_pubsub_to_ws(websocket, workflow_id)
-    )
-    heartbeat_task = asyncio.create_task(
-        _heartbeat(websocket)
-    )
+    pubsub_task = asyncio.create_task(_bridge_pubsub_to_ws(websocket, workflow_id))
+    heartbeat_task = asyncio.create_task(_heartbeat(websocket))
 
     try:
         # Listen for client messages (commands)
@@ -159,13 +154,15 @@ async def _bridge_pubsub_to_ws(websocket: WebSocket, workflow_id: str) -> None:
     try:
         async for event in EventBus.subscribe("workflow", workflow_id, "*"):
             try:
-                await websocket.send_json({
-                    "type": "event",
-                    "event_id": event.event_id,
-                    "event_type": event.event_type,
-                    "timestamp": event.timestamp,
-                    "data": event.data,
-                })
+                await websocket.send_json(
+                    {
+                        "type": "event",
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "timestamp": event.timestamp,
+                        "data": event.data,
+                    }
+                )
             except Exception:
                 break  # WebSocket closed
     except asyncio.CancelledError:
@@ -187,9 +184,7 @@ async def _heartbeat(websocket: WebSocket) -> None:
         pass
 
 
-async def _handle_client_message(
-    websocket: WebSocket, workflow_id: str, raw: str
-) -> None:
+async def _handle_client_message(websocket: WebSocket, workflow_id: str, raw: str) -> None:
     """Handle incoming messages from the WebSocket client."""
     try:
         msg = json.loads(raw)
@@ -220,17 +215,21 @@ async def _handle_client_message(
         await websocket.send_json({"type": "ack", "action": "cancel"})
 
     elif action == "status":
-        await websocket.send_json({
-            "type": "status",
-            "connections": manager.get_status(),
-        })
+        await websocket.send_json(
+            {
+                "type": "status",
+                "connections": manager.get_status(),
+            }
+        )
 
     else:
-        await websocket.send_json({
-            "type": "error",
-            "detail": f"Unknown action: {action}",
-            "supported": ["ping", "pause", "cancel", "status"],
-        })
+        await websocket.send_json(
+            {
+                "type": "error",
+                "detail": f"Unknown action: {action}",
+                "supported": ["ping", "pause", "cancel", "status"],
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -254,14 +253,16 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
     try:
         async for channel, event in EventBus.subscribe_multiple("*"):
             try:
-                await websocket.send_json({
-                    "type": "event",
-                    "channel": channel,
-                    "event_id": event.event_id,
-                    "event_type": event.event_type,
-                    "timestamp": event.timestamp,
-                    "data": event.data,
-                })
+                await websocket.send_json(
+                    {
+                        "type": "event",
+                        "channel": channel,
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "timestamp": event.timestamp,
+                        "data": event.data,
+                    }
+                )
             except Exception:
                 break
     except (WebSocketDisconnect, asyncio.CancelledError):

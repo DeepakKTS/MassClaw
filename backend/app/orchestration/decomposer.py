@@ -106,15 +106,11 @@ class TaskDecomposer:
                 for task in result.tasks:
                     if task.capability not in available_capabilities:
                         # Try fuzzy match
-                        matched = self._fuzzy_match_capability(
-                            task.capability, available_capabilities
-                        )
+                        matched = self._fuzzy_match_capability(task.capability, available_capabilities)
                         if matched:
                             task.capability = matched
                         else:
-                            raise ValueError(
-                                f"Task '{task.id}' uses unknown capability '{task.capability}'"
-                            )
+                            raise ValueError(f"Task '{task.id}' uses unknown capability '{task.capability}'")
 
                 # Build DAG
                 nodes = [

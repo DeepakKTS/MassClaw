@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import redis.asyncio as aioredis
-from sqlalchemy import and_, cast, delete, func, select, text, update
+from sqlalchemy import and_, cast, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,9 +36,7 @@ class AgentService:
     async def create_agent(self, data: AgentCreate) -> Agent:
         """Register a new agent."""
         # Check uniqueness
-        existing = await self.session.execute(
-            select(Agent).where(Agent.name == data.name)
-        )
+        existing = await self.session.execute(select(Agent).where(Agent.name == data.name))
         if existing.scalar_one_or_none():
             raise ConflictError(f"Agent with name '{data.name}' already exists")
 
@@ -72,9 +70,7 @@ class AgentService:
 
     async def get_agent(self, agent_id: uuid.UUID) -> Agent:
         """Get an agent by ID."""
-        result = await self.session.execute(
-            select(Agent).where(Agent.agent_id == agent_id)
-        )
+        result = await self.session.execute(select(Agent).where(Agent.agent_id == agent_id))
         agent = result.scalar_one_or_none()
         if agent is None:
             raise NotFoundError("Agent", str(agent_id))
@@ -122,9 +118,7 @@ class AgentService:
             page_size=pagination.page_size,
         )
 
-    async def update_agent(
-        self, agent_id: uuid.UUID, data: AgentUpdate
-    ) -> Agent:
+    async def update_agent(self, agent_id: uuid.UUID, data: AgentUpdate) -> Agent:
         """Update an agent. Uses optimistic locking via updated_at check."""
         agent = await self.get_agent(agent_id)
 
@@ -195,7 +189,7 @@ class AgentService:
     async def health_check(self, agent_id: uuid.UUID) -> HealthCheckResponse:
         """Perform a health check on an agent."""
         agent = await self.get_agent(agent_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if not agent.health_check_url:
             return HealthCheckResponse(
@@ -256,11 +250,7 @@ class AgentService:
 
         if filters.capabilities:
             # Use JSONB @> containment operator
-            conditions.append(
-                Agent.capabilities.op("@>")(
-                    cast(filters.capabilities, JSONB)
-                )
-            )
+            conditions.append(Agent.capabilities.op("@>")(cast(filters.capabilities, JSONB)))
 
         if filters.status:
             conditions.append(Agent.status == filters.status)
@@ -280,8 +270,6 @@ class AgentService:
 
         if filters.name_query:
             # Trigram similarity search
-            conditions.append(
-                func.similarity(Agent.name, filters.name_query) > 0.3
-            )
+            conditions.append(func.similarity(Agent.name, filters.name_query) > 0.3)
 
         return conditions

@@ -55,9 +55,7 @@ async def get_workflow_memories(
 ) -> PaginatedResponse[MemoryResponse]:
     """Get all memory records for a workflow, paginated."""
     pagination = PaginationParams(page=page, page_size=page_size)
-    return await service.get_workflow_memories(
-        workflow_id, pagination, memory_type=memory_type
-    )
+    return await service.get_workflow_memories(workflow_id, pagination, memory_type=memory_type)
 
 
 @router.get("/{memory_id}/versions", response_model=list[MemoryResponse])

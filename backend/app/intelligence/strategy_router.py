@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,7 +56,7 @@ class StrategyRouter:
         from app.models.base import WorkflowStatus
 
         workflow.status = WorkflowStatus.RUNNING
-        workflow.started_at = datetime.now(timezone.utc)
+        workflow.started_at = datetime.now(UTC)
         await self.session.flush()
 
         response = await self.router.generate(
@@ -67,8 +66,10 @@ class StrategyRouter:
         )
 
         # Track budget for direct responses
-        from app.llm.token_counter import tokens_to_credits
         from decimal import Decimal
+
+        from app.llm.token_counter import tokens_to_credits
+
         actual_cost = tokens_to_credits(response.cost)
         workflow.budget_used = Decimal(str(actual_cost))
 
@@ -82,7 +83,7 @@ class StrategyRouter:
         }
 
         workflow.status = WorkflowStatus.COMPLETED
-        workflow.completed_at = datetime.now(timezone.utc)
+        workflow.completed_at = datetime.now(UTC)
         workflow.result = result
         await self.session.flush()
 
@@ -91,6 +92,7 @@ class StrategyRouter:
     async def _dag_pipeline(self, plan: ExecutionPlan, workflow: Workflow) -> dict:
         """Classic DAG decomposition + parallel execution. Delegates to existing orchestration."""
         from sqlalchemy import select
+
         from app.models.agent import Agent
         from app.models.base import WorkflowStatus
         from app.orchestration.decomposer import TaskDecomposer
@@ -101,9 +103,7 @@ class StrategyRouter:
         await self.session.flush()
 
         # Get available capabilities
-        result = await self.session.execute(
-            select(Agent.capabilities).where(Agent.status.in_(["active", "degraded"]))
-        )
+        result = await self.session.execute(select(Agent.capabilities).where(Agent.status.in_(["active", "degraded"])))
         all_caps: set[str] = set()
         for row in result.all():
             caps = row[0]
@@ -136,18 +136,19 @@ class StrategyRouter:
         from app.models.base import WorkflowStatus
 
         workflow.status = WorkflowStatus.RUNNING
-        workflow.started_at = datetime.now(timezone.utc)
+        workflow.started_at = datetime.now(UTC)
         await self.session.flush()
 
-        from app.llm.token_counter import tokens_to_credits
         from decimal import Decimal
+
+        from app.llm.token_counter import tokens_to_credits
 
         outputs: list[dict[str, str]] = []
         iteration = 0
         reflection_count = 0
         total_tokens = 0
         total_cost = 0.0
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # Keep only last 3 iterations in context to avoid unbounded growth
         MAX_CONTEXT_ITERATIONS = 3
@@ -177,7 +178,7 @@ class StrategyRouter:
                 break
 
             # Check guardrails with real budget and elapsed time
-            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            elapsed = (datetime.now(UTC) - start_time).total_seconds()
             should_stop, reason = self.guardrails.should_force_stop(
                 iteration, reflection_count, total_cost, float(workflow.budget_limit), elapsed
             )
@@ -199,7 +200,7 @@ class StrategyRouter:
         }
 
         workflow.status = WorkflowStatus.COMPLETED
-        workflow.completed_at = datetime.now(timezone.utc)
+        workflow.completed_at = datetime.now(UTC)
         workflow.result = result
         await self.session.flush()
 

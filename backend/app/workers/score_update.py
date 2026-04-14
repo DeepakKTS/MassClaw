@@ -1,4 +1,5 @@
 """Celery tasks for evolution scoring: batch recalculation and promotion/demotion."""
+
 from __future__ import annotations
 
 from app.core.logging import get_logger

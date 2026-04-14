@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     DateTime,
@@ -14,12 +15,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from app.models.agent import Agent
-    from app.models.task import Task
-    from app.models.workflow import Workflow
 
 
 class TrustEvent(Base):

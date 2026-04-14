@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
     settings.validate_production_settings()
 
     # Initialize database
-    engine = init_db()
+    init_db()
     logger.info("database_initialized", url=settings.database_url.split("@")[-1])
 
     # Initialize Redis
@@ -139,6 +139,7 @@ def create_app() -> FastAPI:
         # Check embedding model
         try:
             from app.embeddings.service import get_embedding_service
+
             svc = get_embedding_service()
             ready["embeddings"] = "ready" if svc else "not_ready"
             if not svc:

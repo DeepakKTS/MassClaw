@@ -45,11 +45,12 @@ async def discover_capabilities() -> dict:
     This is the primary discovery endpoint for external agents (OpenClaw, stock agents).
     Returns what MassClaw can do, how many agents are available, and which endpoints to use.
     """
+    from sqlalchemy import func, select
+
+    from app.config import get_settings
     from app.core.database import db_session_context
-    from sqlalchemy import select, func
     from app.models.agent import Agent
     from app.models.base import AgentStatus
-    from app.config import get_settings
 
     settings = get_settings()
 
@@ -61,9 +62,7 @@ async def discover_capabilities() -> dict:
         agent_count = count_result.scalar() or 0
 
         # Get all unique capabilities
-        agents_result = await session.execute(
-            select(Agent.capabilities).where(Agent.status == AgentStatus.ACTIVE)
-        )
+        agents_result = await session.execute(select(Agent.capabilities).where(Agent.status == AgentStatus.ACTIVE))
         all_caps = set()
         all_domains = set()
         for row in agents_result:
@@ -73,6 +72,7 @@ async def discover_capabilities() -> dict:
 
         # Get domains from recent workflows
         from app.models.workflow import Workflow
+
         domains_result = await session.execute(
             select(Workflow.domain).where(Workflow.domain.isnot(None)).distinct().limit(20)
         )

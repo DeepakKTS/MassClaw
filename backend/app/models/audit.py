@@ -38,15 +38,9 @@ class AuditLog(Base):
         nullable=True,
         index=True,
     )
-    event_type: Mapped[AuditEventType] = mapped_column(
-        pg_enum(AuditEventType), nullable=False, index=True
-    )
-    actor_type: Mapped[ActorType] = mapped_column(
-        pg_enum(ActorType), nullable=False, index=True
-    )
-    actor_id: Mapped[str] = mapped_column(
-        String(255), nullable=False, index=True
-    )
+    event_type: Mapped[AuditEventType] = mapped_column(pg_enum(AuditEventType), nullable=False, index=True)
+    actor_type: Mapped[ActorType] = mapped_column(pg_enum(ActorType), nullable=False, index=True)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     input_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

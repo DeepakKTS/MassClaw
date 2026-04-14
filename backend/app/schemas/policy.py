@@ -59,9 +59,7 @@ class PolicyEvaluationRequest(BaseModel):
     """Ad-hoc policy evaluation request."""
 
     action: str = Field(..., description="Action being evaluated, e.g. 'memory_write'")
-    context: dict[str, Any] = Field(
-        ..., description="Context for evaluation, e.g. {'agent.trust_score': 0.2}"
-    )
+    context: dict[str, Any] = Field(..., description="Context for evaluation, e.g. {'agent.trust_score': 0.2}")
 
 
 class PolicyDecisionResponse(BaseModel):

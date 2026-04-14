@@ -9,7 +9,7 @@ from app.core.logging import get_logger
 from app.exceptions import AgentUnavailableError
 from app.models.agent import Agent
 from app.models.base import AgentStatus
-from app.orchestration.dag import DAG, DAGNode
+from app.orchestration.dag import DAG
 
 logger = get_logger(__name__)
 
@@ -45,20 +45,14 @@ class AgentSelector:
         Raises AgentUnavailableError if no suitable agent is found.
         """
         # Query candidates
-        query = (
-            select(Agent)
-            .where(
-                Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]),
-            )
+        query = select(Agent).where(
+            Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]),
         )
         result = await self.session.execute(query)
         all_agents = list(result.scalars().all())
 
         # Filter by capability match
-        candidates = [
-            a for a in all_agents
-            if capability in (a.capabilities or [])
-        ]
+        candidates = [a for a in all_agents if capability in (a.capabilities or [])]
 
         # Exclude specific agents (for fallback retries)
         if exclude_agent_ids:
@@ -66,10 +60,7 @@ class AgentSelector:
 
         # Filter by budget
         if budget_remaining is not None:
-            candidates = [
-                a for a in candidates
-                if self._get_avg_cost(a) <= budget_remaining
-            ]
+            candidates = [a for a in candidates if self._get_avg_cost(a) <= budget_remaining]
 
         if not candidates:
             raise AgentUnavailableError(

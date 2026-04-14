@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +27,7 @@ Respond with ONLY valid JSON:
 
 class StructuredGoal(BaseModel):
     """Parsed user intent with metadata for planning."""
+
     original_prompt: str
     intent: str = "analyze"
     constraints: list[str] = Field(default_factory=list)
@@ -60,6 +59,7 @@ class GoalInterpreter:
             # Handle markdown fences
             if "```" in content:
                 import re
+
                 match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
                 if match:
                     content = match.group(1).strip()
@@ -68,7 +68,7 @@ class GoalInterpreter:
             start = content.find("{")
             end = content.rfind("}")
             if start != -1 and end != -1:
-                content = content[start:end + 1]
+                content = content[start : end + 1]
 
             parsed = json.loads(content)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from statistics import mean, stdev
 
 import redis.asyncio as aioredis
@@ -49,7 +49,7 @@ class TrustService:
 
     # Bayesian smoothing pseudo-counts for reliability
     RELIABILITY_ALPHA = 2  # prior successes
-    RELIABILITY_BETA = 2   # prior failures
+    RELIABILITY_BETA = 2  # prior failures
 
     def __init__(self, session: AsyncSession, redis: aioredis.Redis) -> None:
         self.session = session
@@ -76,11 +76,7 @@ class TrustService:
         # read the same old_trust, compute independently, and the last writer
         # would silently discard the other's update).
         try:
-            result = await self.session.execute(
-                select(Agent)
-                .where(Agent.agent_id == agent_id)
-                .with_for_update()
-            )
+            result = await self.session.execute(select(Agent).where(Agent.agent_id == agent_id).with_for_update())
         except OperationalError:
             logger.error(
                 "trust_update_lock_failed",
@@ -94,7 +90,7 @@ class TrustService:
             raise NotFoundError("Agent", str(agent_id))
 
         old_trust = agent.trust_score
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         weights = self.settings.trust_score_weights
 
         # 1. Compute weighted composite from raw dimension scores
@@ -219,17 +215,13 @@ class TrustService:
         successes = row.successes
 
         # Bayesian smoothing
-        reliability = (successes + self.RELIABILITY_ALPHA) / (
-            total + self.RELIABILITY_ALPHA + self.RELIABILITY_BETA
-        )
+        reliability = (successes + self.RELIABILITY_ALPHA) / (total + self.RELIABILITY_ALPHA + self.RELIABILITY_BETA)
         return max(0.0, min(1.0, reliability))
 
     async def get_trust_breakdown(self, agent_id: uuid.UUID) -> TrustBreakdown:
         """Get detailed trust breakdown for an agent."""
         # Verify agent exists
-        agent_result = await self.session.execute(
-            select(Agent).where(Agent.agent_id == agent_id)
-        )
+        agent_result = await self.session.execute(select(Agent).where(Agent.agent_id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if agent is None:
             raise NotFoundError("Agent", str(agent_id))
@@ -268,9 +260,7 @@ class TrustService:
     ) -> PaginatedResponse[TrustEventResponse]:
         """Get paginated trust event history for an agent."""
         # Verify agent exists
-        agent_result = await self.session.execute(
-            select(Agent.agent_id).where(Agent.agent_id == agent_id)
-        )
+        agent_result = await self.session.execute(select(Agent.agent_id).where(Agent.agent_id == agent_id))
         if agent_result.scalar_one_or_none() is None:
             raise NotFoundError("Agent", str(agent_id))
 
@@ -279,11 +269,7 @@ class TrustService:
             conditions.append(TrustEvent.created_at >= since)
 
         # Count
-        count_result = await self.session.execute(
-            select(func.count())
-            .select_from(TrustEvent)
-            .where(and_(*conditions))
-        )
+        count_result = await self.session.execute(select(func.count()).select_from(TrustEvent).where(and_(*conditions)))
         total = count_result.scalar_one()
 
         # Fetch
@@ -309,22 +295,17 @@ class TrustService:
         capability_filter: list[str] | None = None,
     ) -> list[TrustSummary]:
         """Get ranked agents by trust score."""
-        query = (
-            select(
-                Agent.agent_id,
-                Agent.name.label("agent_name"),
-                Agent.trust_score,
-            )
-            .where(Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]))
-        )
+        query = select(
+            Agent.agent_id,
+            Agent.name.label("agent_name"),
+            Agent.trust_score,
+        ).where(Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]))
 
         if capability_filter:
             from sqlalchemy import cast
             from sqlalchemy.dialects.postgresql import JSONB
 
-            query = query.where(
-                Agent.capabilities.op("@>")(cast(capability_filter, JSONB))
-            )
+            query = query.where(Agent.capabilities.op("@>")(cast(capability_filter, JSONB)))
 
         query = query.order_by(Agent.trust_score.desc()).limit(limit)
 
@@ -363,7 +344,7 @@ class TrustService:
 
         Returns the number of agents whose trust was decayed.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         decay_rate = self.settings.trust_decay_rate
         decay_interval_hours = self.settings.trust_decay_interval_hours
         decayed_count = 0
@@ -372,9 +353,7 @@ class TrustService:
         # individual trust updates that are holding a row lock.
         result = await self.session.execute(
             select(Agent)
-            .where(
-                Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED])
-            )
+            .where(Agent.status.in_([AgentStatus.ACTIVE, AgentStatus.DEGRADED]))
             .with_for_update(skip_locked=True)
         )
         agents = result.scalars().all()
@@ -385,9 +364,7 @@ class TrustService:
             if hours_since < decay_interval_hours:
                 continue  # Recent activity, skip
 
-            decay_factor = math.pow(
-                1.0 - decay_rate, hours_since / max(decay_interval_hours, 1)
-            )
+            decay_factor = math.pow(1.0 - decay_rate, hours_since / max(decay_interval_hours, 1))
             old_trust = agent.trust_score
             new_trust = max(self.TRUST_FLOOR, old_trust * decay_factor)
 
@@ -414,20 +391,14 @@ class TrustService:
     async def _count_interactions(self, agent_id: uuid.UUID) -> int:
         """Count total trust events for an agent."""
         result = await self.session.execute(
-            select(func.count())
-            .select_from(TrustEvent)
-            .where(TrustEvent.agent_id == agent_id)
+            select(func.count()).select_from(TrustEvent).where(TrustEvent.agent_id == agent_id)
         )
         return result.scalar_one()
 
-    async def _hours_since_last_event(
-        self, agent_id: uuid.UUID, now: datetime
-    ) -> float:
+    async def _hours_since_last_event(self, agent_id: uuid.UUID, now: datetime) -> float:
         """Hours since the most recent trust event for this agent."""
         result = await self.session.execute(
-            select(func.max(TrustEvent.created_at)).where(
-                TrustEvent.agent_id == agent_id
-            )
+            select(func.max(TrustEvent.created_at)).where(TrustEvent.agent_id == agent_id)
         )
         last_event_time = result.scalar_one_or_none()
         if last_event_time is None:
@@ -435,7 +406,7 @@ class TrustService:
 
         # Ensure both are timezone-aware
         if last_event_time.tzinfo is None:
-            last_event_time = last_event_time.replace(tzinfo=timezone.utc)
+            last_event_time = last_event_time.replace(tzinfo=UTC)
 
         delta = now - last_event_time
         return delta.total_seconds() / 3600.0
