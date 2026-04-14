@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     brave_search_api_key: str = ""
     tool_docker_image: str = "python:3.12-slim"
 
+    # Agent Protocol
+    mcp_server_enabled: bool = True
+    mcp_client_enabled: bool = True
+    agent_message_ttl_seconds: int = 3600
+    agent_message_max_size_bytes: int = 100000
+    websocket_agent_heartbeat_seconds: int = 30
+    websocket_agent_reconnect_delay_seconds: int = 5
+
     # Embedding Model
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimensions: int = 384
