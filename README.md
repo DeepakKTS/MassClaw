@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/massclaw_logo.png" alt="MassClaw" width="400" />
+  <img src="docs/massclaw_logo.png" alt="MassClaw" width="600" />
 </p>
-
-<h1 align="center">MassClaw</h1>
 
 <p align="center"><strong>Decentralized Operating Layer for AI Agents</strong></p>
 
