@@ -94,6 +94,11 @@ class Agent(Base, AuditMixin):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
+    protocol_type: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        server_default=text("'http'"),
+    )
 
     # Relationships
     tasks: Mapped[list[Task]] = relationship(back_populates="agent", lazy="selectin")

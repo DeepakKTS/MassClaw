@@ -30,6 +30,7 @@ class AgentCreate(BaseModel):
     output_schema: dict | None = Field(default=None, description="JSON Schema for agent output")
     health_check_url: str | None = Field(default=None, max_length=2048, description="URL for health checks")
     metadata: dict = Field(default_factory=dict)
+    protocol_type: str | None = Field(default="http", description="Protocol type: http, mcp, or websocket")
 
     @field_validator("name")
     @classmethod
@@ -100,6 +101,7 @@ class AgentResponse(BaseModel):
     health_check_url: str | None
     last_health_check: datetime | None
     metadata: dict = Field(alias="metadata_")
+    protocol_type: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -116,6 +118,7 @@ class AgentSummary(BaseModel):
     status: AgentStatus
     version: str
     safety_level: int
+    protocol_type: str | None = None
     created_at: datetime
 
 

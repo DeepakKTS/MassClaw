@@ -70,6 +70,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
 
     # Shutdown
     logger.info("shutting_down_massclaw")
+
+    # Disconnect MCP servers
+    from app.protocols.mcp_registry import get_mcp_manager
+
+    await get_mcp_manager().disconnect_all()
+    logger.info("mcp_servers_disconnected")
+
     await dispose_redis()
     await dispose_db()
     logger.info("massclaw_shutdown_complete")

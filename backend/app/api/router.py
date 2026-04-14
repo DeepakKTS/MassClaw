@@ -36,6 +36,10 @@ from app.api.tools import router as tools_router
 
 api_router.include_router(tools_router, prefix="/tools", tags=["Tools"])
 
+from app.api.mcp import router as mcp_router
+
+api_router.include_router(mcp_router, prefix="/mcp", tags=["MCP"])
+
 
 @api_router.get("/", tags=["System"])
 async def api_root() -> dict[str, str]:
