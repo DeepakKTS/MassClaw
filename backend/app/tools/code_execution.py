@@ -103,7 +103,15 @@ class CodeExecutionTool(ToolProvider):
             },
         }
 
-        docker = aiodocker.Docker()
+        try:
+            docker = aiodocker.Docker()
+        except Exception as e:
+            return ToolResult(
+                content=f"Docker unavailable: {e}. Ensure Docker is running.",
+                success=False,
+                metadata={"language": language, "error": "docker_unavailable"},
+            )
+
         container = None
         try:
             container = await docker.containers.create(config=container_config)
