@@ -40,6 +40,9 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0,<2.0",
     "python-multipart>=0.0.9",
+    # Tool System extras
+    "aiodocker>=0.23,<1.0",
+    "beautifulsoup4>=4.12,<5.0",
 ]
 
 [project.optional-dependencies]
