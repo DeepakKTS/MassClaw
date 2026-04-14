@@ -25,6 +25,9 @@ class HTTPAdapter(ProtocolAdapter):
         Returns an AgentMessage built from the response body, or None if the
         agent returns no body or an error response.
         """
+        if not agent.endpoint:
+            return None
+
         import dataclasses
 
         payload = dataclasses.asdict(message)

@@ -215,7 +215,10 @@ class MassClawMCPServer:
         from app.core.redis import get_redis_manager
         from app.services.workflow_service import WorkflowService
 
-        workflow_id = uuid.UUID(args["workflow_id"])
+        try:
+            workflow_id = uuid.UUID(args["workflow_id"])
+        except (ValueError, KeyError) as e:
+            return {"error": f"Invalid workflow_id: {e}"}
         redis = get_redis_manager().get_cache_client()
         async with db_session_context() as session:
             svc = WorkflowService(session, redis)
@@ -227,7 +230,10 @@ class MassClawMCPServer:
         from app.core.redis import get_redis_manager
         from app.services.workflow_service import WorkflowService
 
-        workflow_id = uuid.UUID(args["workflow_id"])
+        try:
+            workflow_id = uuid.UUID(args["workflow_id"])
+        except (ValueError, KeyError) as e:
+            return {"error": f"Invalid workflow_id: {e}"}
         redis = get_redis_manager().get_cache_client()
         async with db_session_context() as session:
             svc = WorkflowService(session, redis)

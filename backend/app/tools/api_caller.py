@@ -110,9 +110,19 @@ class APICallerTool(ToolProvider):
     }
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        from urllib.parse import urlparse
+
         url: str = arguments.get("url", "").strip()
         if not url:
             return ToolResult(content="Error: 'url' argument is required.", success=False)
+
+        # Scheme validation — block file://, ftp://, etc.
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return ToolResult(
+                content=f"Blocked: only http/https URLs allowed (got: {parsed.scheme or 'none'})",
+                success=False,
+            )
 
         method: str = arguments.get("method", "GET").upper()
         if method not in _ALLOWED_METHODS:
@@ -136,7 +146,7 @@ class APICallerTool(ToolProvider):
         try:
             async with httpx.AsyncClient(
                 timeout=_REQUEST_TIMEOUT,
-                follow_redirects=True,
+                follow_redirects=False,  # Disabled to prevent SSRF via redirect chains
             ) as client:
                 request_kwargs: dict[str, Any] = {
                     "headers": headers,

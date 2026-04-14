@@ -57,6 +57,9 @@ class MCPClient:
 
     async def connect(self) -> None:
         """Spawn the MCP server process and initialise the session."""
+        if self._connected:
+            return
+
         from contextlib import AsyncExitStack
 
         from mcp import ClientSession, StdioServerParameters

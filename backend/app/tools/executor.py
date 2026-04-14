@@ -30,12 +30,14 @@ class ToolExecutor:
         if tool is None:
             return ToolResult(content=f"Tool not found: {tool_name}", success=False)
 
-        # Pre-execution safety: check arguments for injection
+        # Pre-execution safety: check arguments for injection (5s timeout)
         try:
+            import asyncio
+
             from app.safety.injection_detector import InjectionDetector
 
             detector = InjectionDetector()
-            assessment = await detector.analyze(str(arguments))
+            assessment = await asyncio.wait_for(detector.analyze(str(arguments)), timeout=5.0)
             if assessment.is_suspicious and assessment.recommendation == "block":
                 logger.warning("tool_execution_blocked", tool=tool_name, risk_score=assessment.risk_score)
                 return ToolResult(
@@ -43,6 +45,8 @@ class ToolExecutor:
                     success=False,
                     metadata={"blocked_reason": "injection_detection"},
                 )
+        except TimeoutError:
+            logger.warning("injection_check_timeout", tool=tool_name)
         except Exception as e:
             logger.warning("injection_check_skipped", error=str(e))
 
@@ -54,16 +58,20 @@ class ToolExecutor:
             logger.error("tool_execution_error", tool=tool_name, error=str(e))
             return ToolResult(content=f"Tool execution failed: {e}", success=False)
 
-        # Post-execution safety: filter content for PII
+        # Post-execution safety: filter content for PII (5s timeout)
         if result.success and result.content:
             try:
+                import asyncio
+
                 from app.safety.content_filter import ContentFilter
 
                 cf = ContentFilter()
-                analysis = await cf.analyze(result.content)
+                analysis = await asyncio.wait_for(cf.analyze(result.content), timeout=5.0)
                 if analysis.pii_detected:
-                    result.content = await cf.redact_pii(result.content)
+                    result.content = await asyncio.wait_for(cf.redact_pii(result.content), timeout=5.0)
                     result.metadata["pii_redacted"] = True
+            except TimeoutError:
+                logger.warning("content_filter_timeout", tool=tool_name)
             except Exception as e:
                 logger.warning("content_filter_skipped", error=str(e))
 

@@ -13,7 +13,11 @@ def _safe_resolve(workspace: str, relative_path: str) -> Path | None:
     """Resolve *relative_path* inside *workspace*, returning None if the resolved
     path escapes the workspace root (path-traversal guard)."""
     workspace_real = os.path.realpath(workspace)
-    candidate = os.path.realpath(os.path.join(workspace, relative_path))
+    raw_path = os.path.join(workspace, relative_path)
+    # Block symlinks — they could point outside the workspace
+    if os.path.islink(raw_path):
+        return None
+    candidate = os.path.realpath(raw_path)
     if not candidate.startswith(workspace_real + os.sep) and candidate != workspace_real:
         return None
     return Path(candidate)

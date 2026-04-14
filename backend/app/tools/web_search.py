@@ -157,7 +157,7 @@ class WebScrapeTool(ToolProvider):
         max_chars = max(100, min(max_chars, 50000))
 
         try:
-            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT, follow_redirects=False) as client:
                 response = await client.get(
                     url,
                     headers={"User-Agent": "MassClaw-Agent/1.0 (research scraper)"},

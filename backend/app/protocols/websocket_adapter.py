@@ -12,6 +12,8 @@ from app.protocols.base import AgentMessage, ProtocolAdapter, ProtocolType
 
 logger = get_logger(__name__)
 
+MAX_WEBSOCKET_CONNECTIONS = 100
+
 
 class WebSocketAdapter(ProtocolAdapter):
     """Maintains persistent WebSocket connections to agents.
@@ -89,6 +91,10 @@ class WebSocketAdapter(ProtocolAdapter):
 
         Returns the websockets connection object, or None on failure.
         """
+        if len(self._connections) >= MAX_WEBSOCKET_CONNECTIONS:
+            logger.error("ws_connection_limit_reached", max=MAX_WEBSOCKET_CONNECTIONS)
+            return None
+
         import websockets
 
         agent_key = str(agent.agent_id)

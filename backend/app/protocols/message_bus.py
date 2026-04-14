@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import redis.asyncio as aioredis
 
+from app.config import get_settings
 from app.core.logging import get_logger
 from app.protocols.base import AgentMessage
 
@@ -58,6 +59,9 @@ class AgentMessageBus:
             correlation_id=correlation_id,
         )
         payload = json.dumps(_message_to_dict(msg))
+        max_size = get_settings().agent_message_max_size_bytes
+        if len(payload.encode("utf-8")) > max_size:
+            raise ValueError(f"Message size exceeds limit ({max_size} bytes)")
         await self._redis.publish(msg.channel, payload)
         logger.debug(
             "direct_message_sent",
@@ -85,6 +89,9 @@ class AgentMessageBus:
             message_type="notification",
         )
         payload = json.dumps(_message_to_dict(msg))
+        max_size = get_settings().agent_message_max_size_bytes
+        if len(payload.encode("utf-8")) > max_size:
+            raise ValueError(f"Message size exceeds limit ({max_size} bytes)")
         await self._redis.publish(channel, payload)
         logger.debug(
             "capability_broadcast_sent",
