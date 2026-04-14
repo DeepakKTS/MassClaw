@@ -32,6 +32,10 @@ from app.api.projects import router as projects_router
 
 api_router.include_router(projects_router, prefix="/projects", tags=["Projects"])
 
+from app.api.tools import router as tools_router
+
+api_router.include_router(tools_router, prefix="/tools", tags=["Tools"])
+
 
 @api_router.get("/", tags=["System"])
 async def api_root() -> dict[str, str]:
