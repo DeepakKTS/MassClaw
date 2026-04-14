@@ -53,7 +53,7 @@ Response:
   ],
   "domains": ["healthcare", "operations", "general"],
   "endpoints": {
-    "submit_task": "POST /api/v1/tasks/submit",
+    "submit_task": "POST /api/v1/workflows/submit",
     "list_agents": "GET /api/v1/agents",
     "search_agents": "GET /api/v1/agents/search?capability=research",
     "query_memory": "POST /api/v1/memory/query",
@@ -75,7 +75,7 @@ Response:
 ## Step 2: Submit a Task
 
 ```bash
-POST /api/v1/tasks/submit
+POST /api/v1/workflows/submit
 Content-Type: application/json
 
 {

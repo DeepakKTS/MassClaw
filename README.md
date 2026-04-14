@@ -103,7 +103,7 @@ curl http://localhost:8000/api/v1/agents
 ### 6. Submit Your First Task
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/tasks/submit \
+curl -X POST http://localhost:8000/api/v1/workflows/submit \
   -H "Content-Type: application/json" \
   -d '{
     "instruction": "Analyze the risks of deploying AI agents in healthcare scheduling",
@@ -128,7 +128,7 @@ Full interactive docs at `http://localhost:8000/docs` (Swagger) or `/redoc` (ReD
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/tasks/submit` | POST | Submit a plain-English task for orchestration |
+| `/api/v1/workflows/submit` | POST | Submit a plain-English task for orchestration |
 | `/api/v1/capabilities` | GET | Discover available agent capabilities |
 | `/api/v1/agents` | GET/POST | Agent registry (list, register) |
 | `/api/v1/agents/search` | GET | Discovery with trust/cost/capability filtering |
@@ -149,7 +149,7 @@ Full interactive docs at `http://localhost:8000/docs` (Swagger) or `/redoc` (ReD
 curl http://localhost:8000/api/v1/capabilities
 
 # 2. Submit a task
-RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/tasks/submit \
+RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/workflows/submit \
   -H "Content-Type: application/json" \
   -d '{"instruction": "Create a risk assessment for cryptocurrency trading", "budget": 300}')
 
