@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "18"
+
 jobs:
   backend:
     name: Backend
@@ -36,56 +40,62 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@localhost:5432/massclaw_test
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@localhost:5432/massclaw_test
+      REDIS_URL: redis://localhost:6379/0
+      AUTH_REQUIRED: "false"
+      ANTHROPIC_API_KEY: ""
+      OPENAI_API_KEY: ""
+      TESTING: "1"
+      # Cache sentence-transformers models between runs
+      SENTENCE_TRANSFORMERS_HOME: ${{ github.workspace }}/.cache/sentence-transformers
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: backend/pyproject.toml
 
+      - name: Cache sentence-transformers model
+        uses: actions/cache@v4
+        with:
+          path: .cache/sentence-transformers
+          key: sentence-transformers-all-MiniLM-L6-v2-${{ runner.os }}
+
       - name: Install dependencies
-        run: |
-          cd backend
-          pip install ".[dev]"
+        working-directory: backend
+        run: pip install ".[dev]"
 
       - name: Lint
-        run: |
-          cd backend
-          ruff check app/
+        working-directory: backend
+        run: ruff check app/
 
       - name: Format check
-        run: |
-          cd backend
-          ruff format --check app/
+        working-directory: backend
+        run: ruff format --check app/
 
       - name: Type check
-        run: |
-          cd backend
-          mypy app/ || true
+        working-directory: backend
+        run: mypy app/ || true
+
+      - name: Create pgvector extension
+        run: >
+          PGPASSWORD=massclaw psql -h localhost -U massclaw -d massclaw_test
+          -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
       - name: Run migrations
-        env:
-          DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@localhost:5432/massclaw_test
-          DATABASE_SYNC_URL: postgresql://massclaw:massclaw@localhost:5432/massclaw_test
-          REDIS_URL: redis://localhost:6379/0
-          AUTH_REQUIRED: "false"
-        run: |
-          cd backend
-          alembic upgrade head
+        working-directory: backend
+        run: alembic upgrade head
 
       - name: Run tests
-        env:
-          DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@localhost:5432/massclaw_test
-          DATABASE_SYNC_URL: postgresql://massclaw:massclaw@localhost:5432/massclaw_test
-          REDIS_URL: redis://localhost:6379/0
-          AUTH_REQUIRED: "false"
-          TESTING: "1"
-        run: |
-          cd backend
-          pytest tests/unit/ tests/integration/ -v --tb=short
+        working-directory: backend
+        run: pytest tests/unit/ tests/integration/ -v --tb=short -x
 
   frontend:
     name: Frontend
@@ -94,24 +104,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js 18
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: |
-          cd frontend
-          npm ci
+        working-directory: frontend
+        run: npm ci
 
       - name: Build
-        run: |
-          cd frontend
-          npm run build
+        working-directory: frontend
+        run: npm run build
 
       - name: Lint
-        run: |
-          cd frontend
-          npm run lint
+        working-directory: frontend
+        run: npm run lint
