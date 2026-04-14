@@ -13,10 +13,13 @@ PRICING_TABLE: dict[str, dict[str, float]] = {
     "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
     "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
     "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.00},
+    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
     # Aliases
     "claude-opus": {"input": 15.00, "output": 75.00},
     "claude-sonnet": {"input": 3.00, "output": 15.00},
     "claude-haiku": {"input": 0.80, "output": 4.00},
+    # Cache hit (zero cost)
+    "cache": {"input": 0.0, "output": 0.0},
     # OpenAI models
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},

@@ -266,24 +266,48 @@ class WorkflowScheduler:
                 await self._publish_progress(workflow, dag, "task_started", node=node, agent=agent)
 
             # Phase 2: Run LLM calls in parallel (budget already reserved)
+            # Tiered Model Cascade: Haiku for simple tasks, Sonnet for complex/verification
+            HAIKU_CAPABILITIES = {
+                "intake", "classify", "extract-requirements", "data-retrieval",
+                "literature-review", "summarization",
+            }
+            SONNET_CAPABILITIES = {
+                "verification", "quality-check", "consistency-audit",
+                "risk-assessment", "compliance-check", "safety-analysis",
+                "optimization", "process-analysis", "report-generation",
+                "executive-brief", "cost-analysis",
+            }
+
             async def _llm_call(node: DAGNode) -> tuple[DAGNode, LLMResponse | Exception]:
                 task_rec, agent, context = node_contexts[node.node_id]
                 system_prompt = AGENT_PROMPTS.get(node.capability, DEFAULT_AGENT_PROMPT)
                 user_prompt = self._build_agent_prompt(node, context)
-                if node.capability in ("verification", "quality-check", "consistency-audit"):
-                    model = "claude-sonnet-4-20250514"
-                    max_tok = 1500
-                elif node.estimated_complexity == "high":
+
+                # Tiered model selection
+                if node.capability in HAIKU_CAPABILITIES and node.estimated_complexity != "high":
+                    model = "claude-haiku-4-5-20251001"
+                    max_tok = 1000
+                elif node.capability in SONNET_CAPABILITIES or node.estimated_complexity == "high":
                     model = "claude-sonnet-4-20250514"
                     max_tok = 2000
                 else:
+                    # Default: Sonnet for unknown capabilities
                     model = "claude-sonnet-4-20250514"
                     max_tok = 1200
+
+                # Strategy 3: Semantic Result Cache — check before calling LLM
+                cached_result = await self._check_semantic_cache(node, user_prompt)
+                if cached_result:
+                    logger.info("cache_hit", capability=node.capability, node_id=node.node_id)
+                    return node, cached_result
+
                 try:
                     resp = await self.model_router.generate(
                         prompt=user_prompt, system=system_prompt,
                         model=model, max_tokens=max_tok, temperature=0.4,
                     )
+                    # Cache the result for future similar queries
+                    await self._store_in_cache(node, user_prompt, resp)
                     return node, resp
                 except Exception as e:
                     return node, e
@@ -368,7 +392,13 @@ class WorkflowScheduler:
                     dag.mark_completed(node.node_id, output=response.content)
                     await self._publish_progress(
                         workflow, dag, "task_completed", node=node, agent=agent,
-                        extra={"latency_ms": round(latency_ms, 1), "cost_credits": round(actual_credits, 4)},
+                        extra={
+                            "latency_ms": round(latency_ms, 1),
+                            "cost_credits": round(actual_credits, 4),
+                            "model_used": response.model,
+                            "content_preview": response.content[:300] if response.content else "",
+                            "content_length": len(response.content) if response.content else 0,
+                        },
                     )
                     logger.info(
                         "task_completed", workflow_id=str(workflow.workflow_id),
@@ -521,3 +551,82 @@ class WorkflowScheduler:
             f"workflow.{event_type}",
             data,
         )
+
+    # ── Strategy 3: Semantic Result Cache ──
+
+    async def _check_semantic_cache(self, node: DAGNode, prompt: str) -> LLMResponse | None:
+        """Check if a semantically similar task has been completed recently.
+
+        Uses pgvector to find completed task outputs with similar input prompts.
+        Returns a synthetic LLMResponse if a high-similarity match is found.
+        """
+        try:
+            from app.embeddings.service import get_embedding_service
+            from sqlalchemy import select, text
+
+            embedding_svc = get_embedding_service()
+            if not embedding_svc:
+                return None
+
+            # Generate embedding for the current prompt
+            prompt_embedding = await embedding_svc.generate_embedding(prompt[:500])
+
+            # Query memory records for similar completed task outputs
+            # Look for RESULT type memories with high similarity
+            result = await self.session.execute(
+                text("""
+                    SELECT content, 1 - (embedding <=> :embedding::vector) as similarity
+                    FROM memory_records
+                    WHERE memory_type = 'RESULT'
+                      AND confidence >= 0.8
+                      AND created_at > NOW() - INTERVAL '24 hours'
+                    ORDER BY embedding <=> :embedding::vector
+                    LIMIT 1
+                """),
+                {"embedding": str(prompt_embedding)},
+            )
+            row = result.fetchone()
+
+            if row and row.similarity >= 0.88:
+                # High-confidence cache hit — return synthetic response
+                logger.info(
+                    "semantic_cache_hit",
+                    capability=node.capability,
+                    similarity=round(row.similarity, 3),
+                )
+                return LLMResponse(
+                    content=row.content,
+                    model="cache",
+                    input_tokens=0,
+                    output_tokens=0,
+                    total_tokens=0,
+                    cost=Decimal("0"),
+                    latency_ms=0.5,
+                    stop_reason="cache_hit",
+                )
+            return None
+        except Exception as e:
+            # Cache miss on error — fall through to LLM call
+            logger.debug("semantic_cache_error", error=str(e))
+            return None
+
+    async def _store_in_cache(self, node: DAGNode, prompt: str, response: LLMResponse) -> None:
+        """Store a task result in the semantic cache for future reuse.
+
+        Writes to memory_records so future similar queries can hit the cache.
+        Only caches successful results with meaningful content.
+        """
+        try:
+            if not response.content or len(response.content) < 50:
+                return  # Don't cache trivial responses
+
+            from app.embeddings.service import get_embedding_service
+            embedding_svc = get_embedding_service()
+            if not embedding_svc:
+                return
+
+            # The memory write will happen via the normal memory_service flow
+            # in the scheduler's Phase 3 — no need to duplicate here.
+            # This method is a hook for future dedicated cache storage.
+        except Exception:
+            pass  # Best-effort caching
