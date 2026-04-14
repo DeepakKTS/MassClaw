@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.events import EventBus
 from app.core.logging import get_logger
 from app.exceptions import BudgetExhaustedError
@@ -308,19 +310,85 @@ class WorkflowScheduler:
                     logger.info("cache_hit", capability=node.capability, node_id=node.node_id)
                     return node, cached_result
 
-                try:
-                    resp = await self.model_router.generate(
-                        prompt=user_prompt,
-                        system=system_prompt,
-                        model=model,
-                        max_tokens=max_tok,
-                        temperature=0.4,
+                # Resolve tools for this agent's capabilities
+                from app.tools.base import ToolContext
+                from app.tools.executor import ToolExecutor
+                from app.tools.registry import get_tool_registry
+
+                registry = get_tool_registry()
+                agent_caps = agent.capabilities if isinstance(agent.capabilities, list) else []
+                available_tools = registry.get_tools_for_capabilities(agent_caps)
+                tool_schemas = [t.to_schema() for t in available_tools] if available_tools else None
+
+                settings = get_settings()
+                max_iterations = settings.tool_max_iterations
+                all_tool_calls: list[dict] = []
+                current_prompt = user_prompt
+                total_cost = Decimal("0")
+
+                for iteration in range(max_iterations):
+                    try:
+                        resp = await self.model_router.generate(
+                            prompt=current_prompt,
+                            system=system_prompt,
+                            model=model,
+                            max_tokens=max_tok,
+                            temperature=0.4,
+                            tools=tool_schemas,
+                        )
+                        total_cost += resp.cost
+                    except Exception as e:
+                        return node, e
+
+                    # No tool calls — final response
+                    if not resp.tool_calls:
+                        resp.cost = total_cost
+                        if all_tool_calls:
+                            resp.metadata["tool_calls"] = all_tool_calls
+                            resp.metadata["tool_iterations"] = iteration + 1
+                        await self._store_in_cache(node, user_prompt, resp)
+                        return node, resp
+
+                    # Execute tool calls
+                    tool_executor = ToolExecutor(session=self.session, redis=self.redis)
+                    tool_context_obj = ToolContext(
+                        workflow_id=workflow.workflow_id,
+                        agent_id=agent.agent_id,
+                        workspace_path=f"{settings.tool_workspace_base}/{workflow.workflow_id}",
                     )
-                    # Cache the result for future similar queries
-                    await self._store_in_cache(node, user_prompt, resp)
-                    return node, resp
-                except Exception as e:
-                    return node, e
+                    tool_results_text = []
+                    for call in resp.tool_calls:
+                        result = await tool_executor.execute_tool(call.name, call.arguments, tool_context_obj)
+                        all_tool_calls.append(
+                            {
+                                "tool": call.name,
+                                "arguments": call.arguments,
+                                "result": result.content[:500],
+                                "success": result.success,
+                            }
+                        )
+                        tool_results_text.append(
+                            f"## Tool Result: {call.name}\nSuccess: {result.success}\n{result.content}\n"
+                        )
+                        total_cost += Decimal(str(result.cost_credits))
+
+                    # Append tool results for next iteration
+                    current_prompt = (
+                        f"{user_prompt}\n\n"
+                        f"## Tool Execution Results (iteration {iteration + 1})\n\n"
+                        + "\n".join(tool_results_text)
+                        + "\n\nContinue your analysis using these tool results. "
+                        "If you need more information, call another tool. "
+                        "Otherwise, provide your final response."
+                    )
+
+                # Max iterations reached — return last response
+                resp.cost = total_cost
+                resp.metadata["tool_calls"] = all_tool_calls
+                resp.metadata["tool_iterations"] = max_iterations
+                resp.metadata["max_iterations_reached"] = True
+                await self._store_in_cache(node, user_prompt, resp)
+                return node, resp
 
             active_nodes = [n for n in ready_nodes if n.node_id in node_contexts]
             llm_results = await asyncio.gather(*[_llm_call(n) for n in active_nodes])
@@ -520,6 +588,13 @@ class WorkflowScheduler:
             total=len(dag.nodes),
             budget_used=float(workflow.budget_used),
         )
+
+        # Cleanup tool workspace
+        import shutil
+
+        settings = get_settings()
+        workspace = os.path.join(settings.tool_workspace_base, str(workflow.workflow_id))
+        shutil.rmtree(workspace, ignore_errors=True)
 
         return final_result
 

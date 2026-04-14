@@ -60,6 +60,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
         except Exception as e:
             logger.warning("injection_bank_prewarm_failed", error=str(e))
 
+    # Initialize tool registry
+    from app.tools.registry import get_tool_registry
+
+    tool_registry = get_tool_registry()
+    logger.info("tool_registry_initialized", tools=len(tool_registry.list_tools()))
+
     yield
 
     # Shutdown

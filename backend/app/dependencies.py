@@ -232,3 +232,13 @@ async def get_project_service(
     redis: aioredis.Redis = Depends(get_redis),
 ) -> ProjectService:
     return ProjectService(session=session, redis=redis)
+
+
+from app.tools.executor import ToolExecutor
+
+
+async def get_tool_executor(
+    session: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> ToolExecutor:
+    return ToolExecutor(session=session, redis=redis)
