@@ -138,6 +138,15 @@ class Settings(BaseSettings):
     identity_facts_validity_days: int = 30
     identity_nanda_index_handle: str | None = None  # set once we register with the NANDA Index on Day 3
 
+    # NANDA Index client
+    nanda_index_enabled: bool = False  # flip on once the real Index URL is known
+    nanda_index_base_url: str = "https://index.projectnanda.org"
+    nanda_index_api_token: str | None = None
+    nanda_index_timeout_seconds: float = 10.0
+    nanda_index_retry_attempts: int = 3
+    nanda_index_resolve_cache_ttl_seconds: int = 300  # cache remote resolutions for 5 min
+    nanda_index_register_on_startup: bool = False  # publish instance AgentFacts on boot
+
     def validate_production_settings(self) -> None:
         """Validate settings for production safety. Called during app startup."""
         _INSECURE_JWT_DEFAULT = "change-me-in-production-use-a-secure-random-string"

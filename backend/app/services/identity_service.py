@@ -35,9 +35,12 @@ from app.identity.agent_facts import (
     AgentLimits,
     ToolDescriptor,
 )
-from app.identity.did import build_did_from_public_key
+from app.identity.did import build_did_from_public_key, parse_did
+from app.identity.did_resolver import DIDResolver, ResolvedAgent
 from app.identity.key_store import KeyStore, KeyStoreError
+from app.identity.nanda_index import NandaIndexClient, NandaIndexConfig
 from app.identity.signer import KeyPair, encode_multibase
+from app.identity.well_known_fetcher import HttpxWellKnownFetcher
 from app.models.agent import Agent
 
 logger = get_logger(__name__)
@@ -164,6 +167,103 @@ class IdentityService:
         flag_modified(agent, "metadata_")
         await self.session.flush()
         return kp
+
+    # ------------------------------------------------------------------ Resolution
+
+    async def resolve_did(
+        self,
+        did: str,
+        *,
+        well_known_url_hint: str | None = None,
+    ) -> ResolvedAgent:
+        """Resolve a DID to a verified AgentFacts document.
+
+        Tries the local agent registry first, then the NANDA Index (when
+        enabled), then a well-known URL hint. Results are cached in Redis
+        for ``nanda_index_resolve_cache_ttl_seconds`` — enough to keep
+        lookups fast without outliving key rotations.
+        """
+        cache_key = _resolve_cache_key(did)
+        cached = await self._read_cache(cache_key)
+        if cached is not None:
+            source = "cache"
+            return ResolvedAgent(did=did, agent_facts=cached, source=source)
+
+        resolver = self._build_resolver()
+        resolved = await resolver.resolve(did, well_known_url_hint=well_known_url_hint)
+        await self._write_cache(
+            cache_key,
+            resolved.agent_facts,
+            ttl=self._settings.nanda_index_resolve_cache_ttl_seconds,
+        )
+        return resolved
+
+    async def invalidate_resolution(self, did: str) -> None:
+        await self.redis.delete(_resolve_cache_key(did))
+
+    def _build_resolver(self) -> DIDResolver:
+        local = _LocalRegistryAdapter(self)
+        index: NandaIndexClient | None = None
+        if self._settings.nanda_index_enabled:
+            index = NandaIndexClient(
+                NandaIndexConfig(
+                    base_url=self._settings.nanda_index_base_url,
+                    api_token=self._settings.nanda_index_api_token,
+                    retry_attempts=self._settings.nanda_index_retry_attempts,
+                )
+            )
+        well_known = HttpxWellKnownFetcher()
+        return DIDResolver(
+            local_registry=local,
+            nanda_index=index,
+            well_known_fetcher=well_known,
+        )
+
+    async def _lookup_agent_facts_by_did(self, did: str) -> AgentFacts | None:
+        """Return a local agent's AgentFacts if its DID matches, else None.
+
+        Used as the LocalRegistry strategy for :class:`DIDResolver`. Matches
+        on the DID stored in ``agent.metadata_[agent_facts_key][did]``.
+        """
+        parse_did(did)  # Validate shape.
+        from sqlalchemy import select
+
+        result = await self.session.execute(
+            select(Agent).where(Agent.metadata_[_AGENT_KEY_METADATA_FIELD]["did"].as_string() == did)
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return None
+        return await self._build_agent_facts(agent)
+
+    # ------------------------------------------------------------------ NANDA registration
+
+    async def register_instance_with_nanda_index(self) -> dict[str, Any]:
+        """Publish this instance's AgentFacts to the configured NANDA Index.
+
+        Callers are responsible for deciding when to call this (typically once
+        on startup if ``nanda_index_register_on_startup`` is true). Returns the
+        raw Index response for logging.
+        """
+        if not self._settings.nanda_index_enabled:
+            raise IdentityServiceError("NANDA Index is disabled (set nanda_index_enabled=true to register)")
+        client = NandaIndexClient(
+            NandaIndexConfig(
+                base_url=self._settings.nanda_index_base_url,
+                api_token=self._settings.nanda_index_api_token,
+                retry_attempts=self._settings.nanda_index_retry_attempts,
+            )
+        )
+        facts = await self.get_instance_facts()
+        base = self._settings.identity_public_base_url.rstrip("/")
+        facts_url = f"{base}/.well-known/agent-facts.json"
+        result = await client.register(facts, facts_url=facts_url)
+        logger.info(
+            "nanda_index_instance_registered",
+            did=result.did,
+            facts_url=result.facts_url,
+        )
+        return result.raw_response
 
     # ------------------------------------------------------------------ Verification
 
@@ -305,13 +405,27 @@ class IdentityService:
             logger.warning("identity_cache_decode_failed", key=key, error=str(exc))
             return None
 
-    async def _write_cache(self, key: str, facts: AgentFacts) -> None:
-        ttl = self._settings.identity_facts_cache_ttl_seconds
+    async def _write_cache(self, key: str, facts: AgentFacts, *, ttl: int | None = None) -> None:
+        effective_ttl = ttl if ttl is not None else self._settings.identity_facts_cache_ttl_seconds
         payload = json.dumps(facts.to_document(), separators=(",", ":"))
         try:
-            await self.redis.set(key, payload, ex=ttl)
+            await self.redis.set(key, payload, ex=effective_ttl)
         except Exception as exc:
             logger.warning("identity_cache_write_failed", key=key, error=str(exc))
+
+
+class _LocalRegistryAdapter:
+    """Adapts :class:`IdentityService` to the :class:`LocalRegistry` protocol."""
+
+    def __init__(self, service: IdentityService) -> None:
+        self._service = service
+
+    async def get_agent_facts_by_did(self, did: str) -> AgentFacts | None:
+        return await self._service._lookup_agent_facts_by_did(did)
+
+
+def _resolve_cache_key(did: str) -> str:
+    return f"identity:resolve:{did}"
 
 
 # ------------------------------------------------------------------ helpers

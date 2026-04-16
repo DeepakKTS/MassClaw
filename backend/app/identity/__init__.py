@@ -30,7 +30,17 @@ from app.identity.did import (
     parse_did,
     public_key_from_did,
 )
+from app.identity.did_resolver import DIDResolver, ResolutionError, ResolvedAgent
 from app.identity.key_store import AgentKeyPair, KeyStore
+from app.identity.nanda_index import (
+    NandaIndexClient,
+    NandaIndexConfig,
+    NandaIndexError,
+    NandaIndexInvalidResponse,
+    NandaIndexNotFound,
+    NandaIndexUnavailable,
+    RegistrationResult,
+)
 from app.identity.signer import (
     decode_multibase,
     encode_multibase,
@@ -39,6 +49,7 @@ from app.identity.signer import (
     sign_bytes,
     verify_bytes,
 )
+from app.identity.well_known_fetcher import HttpxWellKnownFetcher, WellKnownFetchError
 
 __all__ = [
     "DID_METHOD",
@@ -48,8 +59,20 @@ __all__ = [
     "AgentFactsSubject",
     "AgentKeyPair",
     "AgentLimits",
+    "DIDResolver",
+    "HttpxWellKnownFetcher",
     "KeyStore",
+    "NandaIndexClient",
+    "NandaIndexConfig",
+    "NandaIndexError",
+    "NandaIndexInvalidResponse",
+    "NandaIndexNotFound",
+    "NandaIndexUnavailable",
+    "RegistrationResult",
+    "ResolutionError",
+    "ResolvedAgent",
     "ToolDescriptor",
+    "WellKnownFetchError",
     "build_did_from_public_key",
     "canonicalize",
     "decode_multibase",

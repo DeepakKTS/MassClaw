@@ -44,6 +44,10 @@ from app.api.approvals import router as approvals_router
 
 api_router.include_router(approvals_router, prefix="/approvals", tags=["Approvals"])
 
+from app.api.identity import router as identity_router
+
+api_router.include_router(identity_router, prefix="/identity", tags=["Identity"])
+
 
 @api_router.get("/", tags=["System"])
 async def api_root() -> dict[str, str]:

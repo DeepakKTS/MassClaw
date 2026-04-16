@@ -66,6 +66,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
     tool_registry = get_tool_registry()
     logger.info("tool_registry_initialized", tools=len(tool_registry.list_tools()))
 
+    # Optionally register this instance with the NANDA Index. Registration
+    # happens in the background so a slow or missing Index never blocks
+    # startup — stock agents can still discover us via the well-known URL.
+    if settings.nanda_index_enabled and settings.nanda_index_register_on_startup:
+        import asyncio as _asyncio
+
+        async def _register_with_nanda_index() -> None:
+            from app.core.database import db_session_context
+            from app.core.redis import get_redis_manager
+            from app.services.identity_service import IdentityService
+
+            try:
+                redis = get_redis_manager().get_cache_client()
+                async with db_session_context() as _session:
+                    service = IdentityService(session=_session, redis=redis)
+                    await service.register_instance_with_nanda_index()
+            except Exception as exc:
+                logger.warning("nanda_index_startup_registration_failed", error=str(exc))
+
+        _asyncio.create_task(_register_with_nanda_index())
+        logger.info("nanda_index_startup_registration_scheduled")
+
     yield
 
     # Shutdown
