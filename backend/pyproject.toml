@@ -27,6 +27,7 @@ dependencies = [
     # Security
     "python-jose[cryptography]>=3.3,<4.0",
     "passlib[bcrypt]>=1.7,<2.0",
+    "cryptography>=42,<46",
     # LLM Providers
     "anthropic>=0.40,<1.0",
     "openai>=1.50,<2.0",
