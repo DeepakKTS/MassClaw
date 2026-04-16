@@ -1,8 +1,17 @@
 """HTTP surface for DID resolution.
 
 Exposes the DID resolver so peer MassClaw nodes, the frontend dashboard, and
-any external agent can look up an AgentFacts document by its ``did:nanda:...``
-handle without implementing the resolution logic themselves.
+any external agent can look up an AgentFacts document by its DID without
+implementing the resolution logic themselves.
+
+DIDs accepted, in order of preference:
+
+- ``did:key:z<multibase-Ed25519-pub>`` — W3C-standard, self-contained
+  (identifier carries the public key). Preferred for new integrations.
+- ``did:web:<host>[:path]`` — authenticity rooted in a DNS domain; the
+  resolver verifies by matching ``provider.did``.
+- ``did:nanda:z<multibase>`` — legacy MassClaw method, still accepted for
+  backward compatibility.
 """
 
 from __future__ import annotations
@@ -31,23 +40,56 @@ router = APIRouter()
     summary="Resolve a DID to a verified AgentFacts document.",
 )
 async def resolve_did(
-    did: str = Query(..., description="DID to resolve, e.g. did:nanda:z6Mk..."),
+    did: str = Query(
+        ...,
+        description="DID to resolve. Canonical: did:key:z<multibase-Ed25519-pub>. "
+        "Also accepted: did:web:<host>, did:nanda:z<multibase> (legacy).",
+        examples=["did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"],
+    ),
+    username_hint: str | None = Query(
+        default=None,
+        description="Optional NANDA Index username to use for lookup when the "
+        "DID is not registered locally. The real NANDA Index resolves by "
+        "username, not by DID, so this hint is required for Index fallback.",
+    ),
     hint: str | None = Query(
         default=None,
-        description="Optional well-known URL hint when the Index does not know the DID.",
+        description="Optional https:// URL pointing at the agent's "
+        "/.well-known/agent-facts.json — last-resort resolution strategy.",
         alias="well_known_url_hint",
     ),
     session: AsyncSession = Depends(get_db_session),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> dict[str, Any]:
-    """Resolve a DID and return the AgentFacts document plus the source used.
+    """Resolve a DID and return the AgentFacts v1 document plus the source used.
 
-    Sources are one of ``local``, ``nanda_index``, ``well_known``, or ``cache``.
-    A 404 is returned when no strategy yields a result; 400 for malformed DIDs.
+    **Resolution order**: local registry → NANDA Index (when ``username_hint``
+    is provided) → well-known URL (when ``well_known_url_hint`` is provided).
+
+    **Response**:
+
+    ```json
+    {
+      "did": "did:key:z6Mk...",
+      "source": "local",
+      "agent_facts": { ...NANDA AgentFacts v1 document... }
+    }
+    ```
+
+    **Sources**: ``local`` | ``nanda_index`` | ``well_known`` | ``cache``.
+
+    **Status codes**:
+    - ``200`` — resolved and signature/provider DID verified.
+    - ``400`` — DID is malformed (``{error: "malformed_did", ...}``).
+    - ``404`` — no strategy returned a document (``{error: "did_not_resolvable", ...}``).
     """
     service = IdentityService(session=session, redis=redis)
     try:
-        resolved = await service.resolve_did(did, well_known_url_hint=hint)
+        resolved = await service.resolve_did(
+            did,
+            username_hint=username_hint,
+            well_known_url_hint=hint,
+        )
     except MalformedDIDError as exc:
         raise HTTPException(
             status_code=400,
@@ -55,8 +97,9 @@ async def resolve_did(
                 "error": "malformed_did",
                 "message": str(exc),
                 "next_steps": [
-                    "Ensure the DID follows did:<method>:<identifier> format.",
-                    "For MassClaw, the method is 'nanda' and the identifier is a multibase-encoded public key (prefix 'z').",
+                    "Use the canonical form did:key:z<multibase-Ed25519-pub>.",
+                    "did:web:<host> and did:nanda:z<multibase> (legacy) are also accepted.",
+                    "The identifier after the method name must be non-empty.",
                 ],
             },
         ) from exc
@@ -67,8 +110,9 @@ async def resolve_did(
                 "error": "did_not_resolvable",
                 "message": str(exc),
                 "next_steps": [
-                    "Confirm the DID is registered on this MassClaw node, the NANDA Index, or accessible at a well-known URL.",
-                    "If you know the facts URL, pass it via the 'hint' query parameter.",
+                    "Pass 'username_hint' if the agent is registered on the NANDA Index.",
+                    "Pass 'well_known_url_hint' (https://.../.well-known/agent-facts.json) if you know where the document is hosted.",
+                    "Verify that the DID's provider actually serves an AgentFacts document.",
                 ],
             },
         ) from exc
@@ -90,10 +134,23 @@ async def invalidate_resolution_cache(
     session: AsyncSession = Depends(get_db_session),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> dict[str, str]:
-    """Drop a cached DID resolution — useful after an agent rotates its key."""
+    """Drop a cached DID resolution — useful after an agent rotates its key.
+
+    Returns ``{did, status: "invalidated"}`` on success. Always succeeds when
+    the DID is well-formed; cache misses are silent.
+    """
     service = IdentityService(session=session, redis=redis)
     try:
         await service.invalidate_resolution(did)
     except MalformedDIDError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "malformed_did",
+                "message": str(exc),
+                "next_steps": [
+                    "Pass a well-formed DID (did:key:, did:web:, or legacy did:nanda:).",
+                ],
+            },
+        ) from exc
     return {"did": did, "status": "invalidated"}

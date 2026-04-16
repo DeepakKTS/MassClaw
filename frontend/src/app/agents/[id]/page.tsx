@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { getStatusColor } from "@/lib/utils";
 import { Bot, Shield, Zap, DollarSign, Clock } from "lucide-react";
+import { AgentFactsPanel } from "@/components/identity/AgentFactsPanel";
 
 export default function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -113,6 +114,9 @@ export default function AgentDetailPage() {
           </div>
         </div>
       )}
+
+      {/* AgentFacts (NANDA v1 identity document) */}
+      <AgentFactsPanel agentId={id} />
     </div>
   );
 }
