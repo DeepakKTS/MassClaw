@@ -1,13 +1,4 @@
-"""HTTP-level tests for AgentFacts endpoints.
-
-Confirms the FastAPI app correctly wires the well-known route at the HTTP root,
-exposes the per-agent AgentFacts endpoint under ``/api/v1/agents/{id}/``, and
-returns a verification report from ``POST /api/v1/agents/verify-facts``.
-
-These tests use FastAPI's ``TestClient`` with app-level overrides so they do
-not depend on an actual running server. They still require the shared Postgres
-+ Redis test services that the other integration tests use.
-"""
+"""HTTP-level tests for AgentFacts endpoints (v1 schema)."""
 
 from __future__ import annotations
 
@@ -25,23 +16,15 @@ from app.services.identity_service import IdentityService
 
 @pytest_asyncio.fixture
 async def test_client(db_session, redis_client, tmp_path, monkeypatch) -> AsyncIterator[TestClient]:
-    """Build a TestClient wired to the per-test DB and Redis fixtures.
-
-    Overrides FastAPI ``Depends`` so request handlers pick up the in-memory
-    session/redis rather than allocating fresh ones.
-    """
-
     async def _db_override() -> AsyncIterator:
         yield db_session
 
     async def _redis_override() -> AsyncIterator:
         yield redis_client
 
-    # Isolate instance key + KEK to this test so runs don't bleed into each
-    # other's ``/var/lib/massclaw/instance.key`` file or cached key stores.
     monkeypatch.setenv("IDENTITY_INSTANCE_KEY_PATH", str(tmp_path / "instance.key"))
     monkeypatch.setenv("IDENTITY_KEY_ENCRYPTION_KEY", "22" * 32)
-    # Bust any cached KeyStore/Settings between tests.
+
     from app.config import get_settings
 
     get_settings.cache_clear()  # type: ignore[attr-defined]
@@ -59,17 +42,23 @@ async def test_client(db_session, redis_client, tmp_path, monkeypatch) -> AsyncI
         await asyncio.sleep(0)
 
 
-def test_well_known_returns_signed_agent_facts(test_client: TestClient) -> None:
+def test_well_known_returns_v1_shape(test_client: TestClient) -> None:
     resp = test_client.get("/.well-known/agent-facts.json")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["type"] == ["VerifiableCredential", "AgentFacts"]
-    assert body["issuer"].startswith("did:nanda:")
-    assert body["proof"]["type"] == "Ed25519Signature2020"
-    # The discovery endpoints must include the well-known path so the
-    # document is self-describing without out-of-band knowledge.
-    endpoints = body["credentialSubject"]["endpoints"]
-    assert endpoints["agent_facts"].endswith("/.well-known/agent-facts.json")
+    # v1 shape — flat fields, no VC envelope keys.
+    assert body["id"].startswith("urn:agent:")
+    assert body["agent_name"]
+    assert body["label"]
+    assert body["version"]
+    assert body["provider"]["did"].startswith("did:key:z")
+    assert isinstance(body["capabilities"], dict)
+    assert "modalities" in body["capabilities"]
+    assert isinstance(body["skills"], list)
+    assert isinstance(body["endpoints"]["static"], list)
+    # Old VC keys must not appear.
+    for forbidden in ("@context", "credentialSubject", "proof", "validFrom", "issuer"):
+        assert forbidden not in body
 
 
 def test_well_known_document_verifies(test_client: TestClient) -> None:
@@ -83,8 +72,8 @@ def test_per_agent_agent_facts(test_client: TestClient, sample_agent) -> None:
     resp = test_client.get(path)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["credentialSubject"]["id"].startswith("did:nanda:")
-    assert body["credentialSubject"]["name"] == sample_agent.name
+    assert body["provider"]["did"].startswith("did:key:z")
+    assert body["label"] == sample_agent.name
     assert IdentityService.verify_document(body)["valid"] is True
 
 
@@ -104,7 +93,7 @@ def test_verify_endpoint_accepts_valid_document(test_client: TestClient) -> None
 
 def test_verify_endpoint_catches_tampering(test_client: TestClient) -> None:
     body = test_client.get("/.well-known/agent-facts.json").json()
-    body["credentialSubject"]["name"] = "EVIL-MASSCLAW"
+    body["label"] = "EVIL-MASSCLAW"
     resp = test_client.post("/api/v1/agents/verify-facts", json=body)
     assert resp.status_code == 200
     report = resp.json()

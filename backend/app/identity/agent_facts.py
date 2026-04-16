@@ -1,42 +1,47 @@
-"""AgentFacts — a signed, self-describing identity document for an agent.
+"""AgentFacts v1 — the NANDA-canonical identity document.
 
-An AgentFacts document is what a stock OpenClaw agent fetches to learn what
-MassClaw can do. It is the NANDA-native equivalent of an OpenAPI spec plus a
-verifiable credential. The signature proves the document was produced by the
-holder of the private key that matches the DID embedded in ``credentialSubject.id``.
+Schema source: ``projnanda/agentfacts-format`` on GitHub
+(`agentfacts_schema.json`, ``$id: https://agentfacts.org/schema/v1``).
 
-The document layout is deliberately close to the W3C Verifiable Credentials v2
-envelope so it can be upgraded to full VC compliance without breaking existing
-consumers:
+An AgentFacts document is what a stock OpenClaw agent fetches to discover what
+MassClaw (or any agent on the Internet of Agents) can do. The v1 schema is a
+flat object — NOT a W3C Verifiable Credential envelope:
 
     {
-      "@context": ["https://www.w3.org/ns/credentials/v2", "https://nanda.mit.edu/ns/agent-facts/v1"],
-      "type": ["VerifiableCredential", "AgentFacts"],
-      "id": "urn:massclaw:agent-facts:<uuid>",
-      "issuer": "did:nanda:<issuer pubkey>",
-      "validFrom": "2026-04-17T00:00:00Z",
-      "validUntil": "2026-10-17T00:00:00Z",
-      "credentialSubject": {
-         "id": "did:nanda:<agent pubkey>",
+      "id": "urn:agent:massclaw:instance",
+      "agent_name": "urn:agent:massclaw:instance",
+      "label": "MassClaw",
+      "description": "...",
+      "version": "1.0.0",
+      "documentationUrl": "https://...",
+      "jurisdiction": "US",
+      "provider": {
          "name": "MassClaw",
-         "description": "...",
-         "capabilities": ["workflow.submit", "memory.read", ...],
-         "tools": [{"name": "web_search", "description": "..."}, ...],
-         "endpoints": {"http": "https://...", "mcp": "https://..."},
-         "limits": {"max_transaction_usd": 5000, "rate_limit_per_min": 60},
-         "trust_zone": "verified-enterprise",
-         "public_key_multibase": "z...",
-         "example_requests": [...],
-         "error_schema": {...}
+         "url": "https://massclaw.example",
+         "did": "did:key:z..."              ← verification anchor
       },
-      "proof": {
-         "type": "Ed25519Signature2020",
-         "created": "2026-04-17T00:00:00Z",
-         "verificationMethod": "did:nanda:<issuer pubkey>#ed25519",
-         "proofPurpose": "assertionMethod",
-         "signatureValue": "z<base58btc signature>"
-      }
+      "endpoints": {
+         "static": ["https://massclaw.example/api/v1"],
+         "adaptive_resolver": {"url": "...", "policies": [...]}
+      },
+      "capabilities": {
+         "modalities": ["text","structured-output"],
+         "authentication": {"methods": ["bearer","api-key","oauth2"]}
+      },
+      "skills": [
+         {"id":"workflow.submit","description":"...","inputModes":["text"],...}
+      ],
+      "certification": {"level":"verified","issuer":"..."},
+      "evaluations": [...],
+      "telemetry": {"metrics": {...}},
+      "verifiable_credentials": [ ... ]     ← optional integrity attestation
     }
+
+Ed25519 signing is expressed as an OPTIONAL entry in ``verifiable_credentials``,
+not as a top-level ``proof``. We use W3C ``DataIntegrityProof`` with cryptosuite
+``eddsa-rdfc-2022``, signing a canonicalized hash of the document with the
+``verifiable_credentials`` array cleared — so the credential is self-contained
+and reproducible.
 """
 
 from __future__ import annotations
@@ -47,7 +52,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.canonicalize import canonicalize
-from app.identity.did import build_did_from_public_key, public_key_from_did
+from app.identity.did import (
+    MalformedDIDError,
+    build_did_key,
+    decode_did_key,
+    parse_did,
+)
 from app.identity.signer import (
     KeyPair,
     decode_multibase,
@@ -56,327 +66,377 @@ from app.identity.signer import (
     verify_bytes,
 )
 
-AGENT_FACTS_CONTEXT: list[str] = [
-    "https://www.w3.org/ns/credentials/v2",
-    "https://nanda.mit.edu/ns/agent-facts/v1",
-]
-AGENT_FACTS_TYPES: list[str] = ["VerifiableCredential", "AgentFacts"]
-PROOF_TYPE = "Ed25519Signature2020"
+INTEGRITY_CRYPTOSUITE = "eddsa-rdfc-2022"
+INTEGRITY_PROOF_TYPE = "DataIntegrityProof"
+INTEGRITY_CREDENTIAL_TYPE = "AgentFactsIntegrityCredential"
 
 
 def _utc_now_isoformat() -> str:
-    """Return a timezone-aware UTC timestamp with second precision."""
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-class AgentLimits(BaseModel):
-    """Declared limits for an agent — consumed by the policy engine."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    max_transaction_usd: float | None = Field(
-        default=None,
-        description="Maximum single financial transaction the agent may authorise.",
-    )
-    rate_limit_per_min: int | None = Field(
-        default=None,
-        description="Maximum tool calls per 60s window.",
-    )
-    cost_cap_per_hour_usd: float | None = Field(
-        default=None,
-        description="Maximum spend this agent may incur per rolling hour.",
-    )
-    max_concurrent_workflows: int | None = Field(default=None)
-
-
-class ToolDescriptor(BaseModel):
-    """A single tool exposed by the agent."""
+class Provider(BaseModel):
+    """The operator/issuer of the agent (required in AgentFacts v1)."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    description: str
-    input_schema: dict[str, Any] | None = None
-    output_schema: dict[str, Any] | None = None
+    url: str
+    did: str | None = Field(
+        default=None,
+        description="DID of the provider — did:web:<domain> or did:key:<multibase>.",
+    )
 
 
-class AgentFactsSubject(BaseModel):
-    """The ``credentialSubject`` of an AgentFacts document."""
+class Endpoints(BaseModel):
+    """Callable surfaces an agent exposes."""
 
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(description="DID of the subject agent, e.g. 'did:nanda:z...'.")
-    name: str
-    description: str
-    capabilities: list[str] = Field(default_factory=list)
-    tools: list[ToolDescriptor] = Field(default_factory=list)
-    endpoints: dict[str, str] = Field(
-        default_factory=dict,
-        description="Keyed by protocol: 'http', 'mcp', 'a2a', 'websocket'.",
+    static: list[str] = Field(default_factory=list, description="Fixed URLs, preferred for v1 consumers.")
+    adaptive_resolver: dict[str, Any] | None = Field(
+        default=None,
+        description="Opt-in adaptive endpoint discovery — {url, policies}.",
     )
-    limits: AgentLimits = Field(default_factory=AgentLimits)
-    trust_zone: str = Field(
-        default="unverified",
-        description="Named bucket used by the policy engine (e.g. 'verified-enterprise').",
-    )
-    public_key_multibase: str = Field(
-        description="Multibase base58btc-encoded Ed25519 public key for the subject.",
-    )
-    example_requests: list[dict[str, Any]] = Field(default_factory=list)
-    error_schema: dict[str, Any] | None = None
-    nanda_index_handle: str | None = None
 
 
-class AgentFactsProof(BaseModel):
-    """The signature block attached to an AgentFacts document."""
+class CapabilityAuthentication(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    methods: list[str] = Field(
+        default_factory=list,
+        description="Accepted auth methods: bearer, api-key, oauth2, mutual-tls, agent-facts-signature, etc.",
+    )
+
+
+class Capabilities(BaseModel):
+    """Structured capabilities — MODALITIES + AUTH, not a flat list of strings."""
 
     model_config = ConfigDict(extra="forbid")
 
-    type: str = PROOF_TYPE
+    modalities: list[str] = Field(
+        default_factory=list,
+        description="text, image, audio, video, structured-output, code, tool-use, workflow, etc.",
+    )
+    authentication: CapabilityAuthentication = Field(default_factory=CapabilityAuthentication)
+
+
+class Skill(BaseModel):
+    """A single capability exposed as a callable skill."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="Stable skill identifier, e.g. 'workflow.submit'.")
+    description: str
+    input_modes: list[str] = Field(alias="inputModes", default_factory=list)
+    output_modes: list[str] = Field(alias="outputModes", default_factory=list)
+    supported_languages: list[str] | None = Field(alias="supportedLanguages", default=None)
+    latency_budget_ms: int | None = Field(alias="latencyBudgetMs", default=None)
+    max_tokens: int | None = Field(alias="maxTokens", default=None)
+
+
+class Certification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level: str = Field(description="e.g. 'verified', 'verified-enterprise', 'unverified'.")
+    issuer: str | None = None
+    issued_at: str | None = Field(alias="issuedAt", default=None)
+    valid_until: str | None = Field(alias="validUntil", default=None)
+
+
+class TelemetryMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    throughput_rps: float | None = None
+    availability: float | None = None
+    latency_p95_ms: float | None = None
+
+
+class Telemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metrics: TelemetryMetrics = Field(default_factory=TelemetryMetrics)
+
+
+class IntegrityProof(BaseModel):
+    """W3C DataIntegrityProof block used inside an integrity credential."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = INTEGRITY_PROOF_TYPE
+    cryptosuite: str = INTEGRITY_CRYPTOSUITE
     created: str
     verification_method: str = Field(alias="verificationMethod")
     proof_purpose: str = Field(default="assertionMethod", alias="proofPurpose")
-    signature_value: str = Field(alias="signatureValue")
+    proof_value: str = Field(alias="proofValue")
 
 
-class AgentFacts(BaseModel):
-    """A full AgentFacts Verifiable Credential."""
+class IntegrityCredential(BaseModel):
+    """A verifiable credential attesting to the integrity of this document."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    context: list[str] = Field(alias="@context", default_factory=lambda: list(AGENT_FACTS_CONTEXT))
-    type: list[str] = Field(default_factory=lambda: list(AGENT_FACTS_TYPES))
-    id: str
+    type: list[str] = Field(default_factory=lambda: [INTEGRITY_CREDENTIAL_TYPE])
     issuer: str
-    valid_from: str = Field(alias="validFrom")
-    valid_until: str | None = Field(default=None, alias="validUntil")
-    credential_subject: AgentFactsSubject = Field(alias="credentialSubject")
-    proof: AgentFactsProof | None = None
+    issued: str
+    proof: IntegrityProof
 
-    def to_signable_dict(self) -> dict[str, Any]:
-        """Return the JSON form minus the proof block — what gets signed."""
-        return self.model_dump(by_alias=True, exclude={"proof"}, exclude_none=True)
+
+class AgentFactsExtensions(BaseModel):
+    """MassClaw-specific extras not covered by the v1 schema.
+
+    Kept under a namespaced key inside the top-level document so schema
+    validators ignore them but consumers who know about MassClaw can still
+    read them. This is how we preserve rich metadata (example requests,
+    error schema, wallet limits) without violating v1.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    example_requests: list[dict[str, Any]] = Field(default_factory=list)
+    error_schema: dict[str, Any] | None = None
+    limits: dict[str, Any] | None = None
+    nanda_index_handle: str | None = None
+
+
+class AgentFacts(BaseModel):
+    """The full AgentFacts v1 document."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: str = Field(description="Stable URN identifying this agent across time.")
+    agent_name: str = Field(description="URN-shaped stable name, typically equal to id.")
+    label: str = Field(description="Human-readable name (e.g. 'MassClaw').")
+    description: str
+    version: str
+    provider: Provider
+    endpoints: Endpoints
+    capabilities: Capabilities
+    skills: list[Skill] = Field(default_factory=list)
+    documentation_url: str | None = Field(alias="documentationUrl", default=None)
+    jurisdiction: str | None = None
+    certification: Certification | None = None
+    telemetry: Telemetry | None = None
+    evaluations: list[dict[str, Any]] | None = None
+    verifiable_credentials: list[IntegrityCredential] = Field(default_factory=list)
+    # MassClaw-specific extensions live under an x-namespaced key so we don't
+    # silently violate the v1 schema's ``additionalProperties`` policy.
+    x_massclaw: AgentFactsExtensions | None = Field(default=None, alias="x-massclaw")
 
     def to_document(self) -> dict[str, Any]:
-        """Return the full JSON form, including the proof if present."""
+        """Serialise to the canonical v1 JSON shape (camelCase where the schema says so)."""
         return self.model_dump(by_alias=True, exclude_none=True)
 
-    def signable_bytes(self) -> bytes:
-        """Canonical bytes that should be Ed25519-signed."""
-        return canonicalize(self.to_signable_dict())
+    def signable_body(self) -> dict[str, Any]:
+        """The body that gets hashed for an integrity credential.
 
-    def verify(self) -> bool:
-        """Verify the proof against the issuer's public key.
-
-        Returns ``False`` on a bad signature. Raises on structurally invalid
-        documents (missing proof, unknown proof type, malformed DID).
+        We exclude the credentials array itself so a credential can sign the
+        doc without signing itself — the standard recursive-signature trick.
         """
-        if self.proof is None:
-            raise ValueError("AgentFacts.verify called on a document with no proof")
-        if self.proof.type != PROOF_TYPE:
-            raise ValueError(f"unsupported proof type: {self.proof.type}")
-        issuer_pub = public_key_from_did(self.issuer)
+        return self.model_dump(
+            by_alias=True,
+            exclude_none=True,
+            exclude={"verifiable_credentials"},
+        )
+
+    def signable_bytes(self) -> bytes:
+        return canonicalize(self.signable_body())
+
+    def attach_integrity_credential(self, keypair: KeyPair) -> IntegrityCredential:
+        """Sign the document and append an integrity credential.
+
+        The verification method references a ``did:key`` derived from the
+        public half of ``keypair``; consumers can verify the signature
+        without fetching any external document.
+        """
+        issuer_did = build_did_key(keypair.public_bytes)
+        signature = sign_bytes(self.signable_bytes(), keypair.private_seed)
+        now = _utc_now_isoformat()
+        cred = IntegrityCredential(
+            issuer=issuer_did,
+            issued=now,
+            proof=IntegrityProof(
+                created=now,
+                **{
+                    "verificationMethod": f"{issuer_did}#ed25519",
+                    "proofPurpose": "assertionMethod",
+                    "proofValue": encode_multibase(signature),
+                },
+            ),
+        )
+        self.verifiable_credentials.append(cred)
+        return cred
+
+    def verify_integrity(self, credential: IntegrityCredential | None = None) -> bool:
+        """Verify a specific integrity credential or the first one found.
+
+        Returns ``False`` on any structural/cryptographic failure. Raises only
+        for programmer errors (no credentials at all when one was requested).
+        """
+        if credential is None:
+            if not self.verifiable_credentials:
+                raise ValueError("AgentFacts has no verifiable_credentials to verify")
+            credential = self.verifiable_credentials[0]
+        if credential.proof.type != INTEGRITY_PROOF_TYPE:
+            return False
+        if credential.proof.cryptosuite != INTEGRITY_CRYPTOSUITE:
+            return False
         try:
-            signature = decode_multibase(self.proof.signature_value)
-        except Exception as exc:
-            raise ValueError(f"malformed signatureValue: {exc}") from exc
-        return verify_bytes(self.signable_bytes(), signature, issuer_pub)
+            verification_did = credential.proof.verification_method.split("#", 1)[0]
+            issuer_pub = _public_key_from_any_did(verification_did)
+            signature = decode_multibase(credential.proof.proof_value)
+        except Exception:
+            return False
+        # Re-create the body as signed: exclude *this* credential only.
+        body = self.model_dump(
+            by_alias=True,
+            exclude_none=True,
+            exclude={"verifiable_credentials"},
+        )
+        payload = canonicalize(body)
+        return verify_bytes(payload, signature, issuer_pub)
 
 
 class AgentFactsBuilder:
-    """Fluent-ish builder for constructing a signed AgentFacts document."""
+    """Fluent builder for AgentFacts v1 documents.
+
+    Minimal required inputs are enforced by :class:`AgentFacts` (Pydantic);
+    the builder simply keeps the call-site readable and the defaults sane.
+    """
 
     def __init__(
         self,
         *,
-        subject_did: str,
-        issuer_did: str,
-        document_id: str,
-        name: str,
+        agent_id: str,
+        label: str,
         description: str,
+        version: str,
+        provider_name: str,
+        provider_url: str,
     ) -> None:
-        self._subject_did = subject_did
-        self._issuer_did = issuer_did
-        self._document_id = document_id
-        self._name = name
+        self._id = agent_id
+        self._label = label
         self._description = description
-        self._capabilities: list[str] = []
-        self._tools: list[ToolDescriptor] = []
-        self._endpoints: dict[str, str] = {}
-        self._limits = AgentLimits()
-        self._trust_zone = "unverified"
-        self._public_key_multibase: str | None = None
-        self._example_requests: list[dict[str, Any]] = []
-        self._error_schema: dict[str, Any] | None = None
-        self._nanda_index_handle: str | None = None
-        self._valid_from: str | None = None
-        self._valid_until: str | None = None
+        self._version = version
+        self._provider_name = provider_name
+        self._provider_url = provider_url
+        self._provider_did: str | None = None
+        self._endpoints_static: list[str] = []
+        self._endpoints_adaptive: dict[str, Any] | None = None
+        self._modalities: list[str] = []
+        self._auth_methods: list[str] = []
+        self._skills: list[Skill] = []
+        self._documentation_url: str | None = None
+        self._jurisdiction: str | None = None
+        self._certification: Certification | None = None
+        self._telemetry: Telemetry | None = None
+        self._extensions: AgentFactsExtensions | None = None
 
-    def capabilities(self, *caps: str) -> AgentFactsBuilder:
-        self._capabilities = list(caps)
+    def provider_did(self, did: str) -> AgentFactsBuilder:
+        # Validate shape up front.
+        parse_did(did)
+        self._provider_did = did
         return self
 
-    def add_capability(self, cap: str) -> AgentFactsBuilder:
-        self._capabilities.append(cap)
+    def endpoint(self, url: str) -> AgentFactsBuilder:
+        self._endpoints_static.append(url)
         return self
 
-    def tools(self, tools: list[ToolDescriptor]) -> AgentFactsBuilder:
-        self._tools = list(tools)
+    def endpoints(self, urls: list[str]) -> AgentFactsBuilder:
+        self._endpoints_static = list(urls)
         return self
 
-    def add_tool(self, tool: ToolDescriptor) -> AgentFactsBuilder:
-        self._tools.append(tool)
+    def adaptive_endpoints(self, url: str, policies: list[str] | None = None) -> AgentFactsBuilder:
+        entry: dict[str, Any] = {"url": url}
+        if policies:
+            entry["policies"] = list(policies)
+        self._endpoints_adaptive = entry
         return self
 
-    def endpoints(self, endpoints: dict[str, str]) -> AgentFactsBuilder:
-        self._endpoints = dict(endpoints)
+    def modalities(self, *modalities: str) -> AgentFactsBuilder:
+        self._modalities = list(modalities)
         return self
 
-    def endpoint(self, protocol: str, url: str) -> AgentFactsBuilder:
-        self._endpoints[protocol] = url
+    def auth_methods(self, *methods: str) -> AgentFactsBuilder:
+        self._auth_methods = list(methods)
         return self
 
-    def limits(self, limits: AgentLimits) -> AgentFactsBuilder:
-        self._limits = limits
+    def add_skill(self, skill: Skill) -> AgentFactsBuilder:
+        self._skills.append(skill)
         return self
 
-    def trust_zone(self, zone: str) -> AgentFactsBuilder:
-        self._trust_zone = zone
+    def skills(self, skills: list[Skill]) -> AgentFactsBuilder:
+        self._skills = list(skills)
         return self
 
-    def public_key(self, public_bytes_or_multibase: bytes | str) -> AgentFactsBuilder:
-        if isinstance(public_bytes_or_multibase, str):
-            # Trust the caller gave us an already-multibase-encoded key; round-trip to
-            # validate.
-            decoded = decode_multibase(public_bytes_or_multibase)
-            if len(decoded) != 32:
-                raise ValueError("Ed25519 public key must decode to 32 bytes")
-            self._public_key_multibase = public_bytes_or_multibase
-        else:
-            self._public_key_multibase = encode_multibase(public_bytes_or_multibase)
+    def documentation_url(self, url: str) -> AgentFactsBuilder:
+        self._documentation_url = url
         return self
 
-    def example_requests(self, examples: list[dict[str, Any]]) -> AgentFactsBuilder:
-        self._example_requests = list(examples)
+    def jurisdiction(self, code: str) -> AgentFactsBuilder:
+        self._jurisdiction = code
         return self
 
-    def error_schema(self, schema: dict[str, Any]) -> AgentFactsBuilder:
-        self._error_schema = dict(schema)
+    def certification(self, level: str, *, issuer: str | None = None) -> AgentFactsBuilder:
+        self._certification = Certification(level=level, issuer=issuer)
         return self
 
-    def nanda_index_handle(self, handle: str) -> AgentFactsBuilder:
-        self._nanda_index_handle = handle
+    def telemetry(self, metrics: TelemetryMetrics) -> AgentFactsBuilder:
+        self._telemetry = Telemetry(metrics=metrics)
         return self
 
-    def validity(self, *, valid_from: str, valid_until: str | None = None) -> AgentFactsBuilder:
-        self._valid_from = valid_from
-        self._valid_until = valid_until
+    def extensions(self, extensions: AgentFactsExtensions) -> AgentFactsBuilder:
+        self._extensions = extensions
         return self
 
-    def _build_unsigned(self) -> AgentFacts:
-        if self._public_key_multibase is None:
-            # Default to deriving the subject's public key from the DID when the
-            # caller did not override it. This is the common case where the agent
-            # signs its own AgentFacts.
-            self._public_key_multibase = _multibase_from_did(self._subject_did)
-
-        subject = AgentFactsSubject(
-            id=self._subject_did,
-            name=self._name,
-            description=self._description,
-            capabilities=list(self._capabilities),
-            tools=list(self._tools),
-            endpoints=dict(self._endpoints),
-            limits=self._limits,
-            trust_zone=self._trust_zone,
-            public_key_multibase=self._public_key_multibase,
-            example_requests=list(self._example_requests),
-            error_schema=self._error_schema,
-            nanda_index_handle=self._nanda_index_handle,
-        )
-        valid_from = self._valid_from or _utc_now_isoformat()
+    def build(self) -> AgentFacts:
         return AgentFacts(
-            **{
-                "@context": list(AGENT_FACTS_CONTEXT),
-                "type": list(AGENT_FACTS_TYPES),
-                "id": self._document_id,
-                "issuer": self._issuer_did,
-                "validFrom": valid_from,
-                "validUntil": self._valid_until,
-                "credentialSubject": subject,
-            }
+            id=self._id,
+            agent_name=self._id,
+            label=self._label,
+            description=self._description,
+            version=self._version,
+            provider=Provider(
+                name=self._provider_name,
+                url=self._provider_url,
+                did=self._provider_did,
+            ),
+            endpoints=Endpoints(
+                static=list(self._endpoints_static),
+                adaptive_resolver=self._endpoints_adaptive,
+            ),
+            capabilities=Capabilities(
+                modalities=list(self._modalities),
+                authentication=CapabilityAuthentication(methods=list(self._auth_methods)),
+            ),
+            skills=list(self._skills),
+            certification=self._certification,
+            telemetry=self._telemetry,
+            **{"documentationUrl": self._documentation_url},
+            jurisdiction=self._jurisdiction,
+            **{"x-massclaw": self._extensions} if self._extensions is not None else {},
         )
 
-    def build_and_sign(self, issuer_keypair: KeyPair) -> AgentFacts:
-        """Build the document and attach an Ed25519 signature.
-
-        The issuer DID must match the public key of ``issuer_keypair``; this is
-        enforced to prevent accidentally signing with the wrong key. Self-issuance
-        (issuer_did == subject_did) is allowed and common.
-        """
-        issuer_pub = public_key_from_did(self._issuer_did)
-        if issuer_pub != issuer_keypair.public_bytes:
-            raise ValueError("issuer_keypair does not match the public key embedded in issuer DID")
-        unsigned = self._build_unsigned()
-        signable = unsigned.signable_bytes()
-        signature = sign_bytes(signable, issuer_keypair.private_seed)
-        unsigned.proof = AgentFactsProof(
-            created=_utc_now_isoformat(),
-            **{
-                "verificationMethod": f"{self._issuer_did}#ed25519",
-                "proofPurpose": "assertionMethod",
-                "signatureValue": encode_multibase(signature),
-            },
-        )
-        return unsigned
+    def build_and_sign(self, keypair: KeyPair) -> AgentFacts:
+        doc = self.build()
+        doc.attach_integrity_credential(keypair)
+        return doc
 
 
-def _multibase_from_did(did: str) -> str:
-    """Pull the multibase-encoded public key fragment back out of a did:nanda DID."""
-    public_bytes = public_key_from_did(did)
-    return encode_multibase(public_bytes)
+def _public_key_from_any_did(did: str) -> bytes:
+    """Extract an Ed25519 public key regardless of the DID method.
 
+    Supports did:key, did:nanda (legacy), and — when the corresponding DID
+    document is resolvable — did:web. For did:web we currently delegate to
+    a thin resolver used by callers that have a DID Document in hand.
+    """
+    parsed = parse_did(did)
+    if parsed.method == "key":
+        return decode_did_key(did)
+    if parsed.method == "nanda":
+        # Legacy support for the pre-v1 MassClaw DID method — identifier is
+        # the same multibase-pubkey form as did:key.
+        from app.identity.did import decode_did_nanda
 
-def build_agent_facts(
-    *,
-    keypair: KeyPair,
-    document_id: str,
-    name: str,
-    description: str,
-    capabilities: list[str] | None = None,
-    tools: list[ToolDescriptor] | None = None,
-    endpoints: dict[str, str] | None = None,
-    limits: AgentLimits | None = None,
-    trust_zone: str = "unverified",
-    example_requests: list[dict[str, Any]] | None = None,
-    error_schema: dict[str, Any] | None = None,
-    nanda_index_handle: str | None = None,
-    valid_until: str | None = None,
-) -> AgentFacts:
-    """Convenience: build a self-issued AgentFacts document in one call."""
-    did = build_did_from_public_key(keypair.public_bytes)
-    builder = (
-        AgentFactsBuilder(
-            subject_did=did,
-            issuer_did=did,
-            document_id=document_id,
-            name=name,
-            description=description,
-        )
-        .capabilities(*(capabilities or []))
-        .tools(tools or [])
-        .endpoints(endpoints or {})
-        .trust_zone(trust_zone)
-        .public_key(keypair.public_bytes)
-    )
-    if limits is not None:
-        builder.limits(limits)
-    if example_requests is not None:
-        builder.example_requests(example_requests)
-    if error_schema is not None:
-        builder.error_schema(error_schema)
-    if nanda_index_handle is not None:
-        builder.nanda_index_handle(nanda_index_handle)
-    if valid_until is not None:
-        builder.validity(valid_from=_utc_now_isoformat(), valid_until=valid_until)
-    return builder.build_and_sign(keypair)
+        return decode_did_nanda(did)
+    raise MalformedDIDError(f"cannot extract Ed25519 public key from did:{parsed.method}: without a resolver")

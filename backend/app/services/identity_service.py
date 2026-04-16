@@ -1,19 +1,18 @@
-"""IdentityService — builds and caches AgentFacts documents.
+"""IdentityService — builds and caches AgentFacts v1 documents.
 
-Two flavours of AgentFacts live in MassClaw:
+Produces two flavours:
 
-- **Instance AgentFacts**: one per MassClaw node, signed by the node's instance
-  key. Published at ``/.well-known/agent-facts.json`` so a stock OpenClaw agent
-  can discover the platform, the tool catalogue, and the endpoints it should
-  call.
+- **Instance AgentFacts**: describes this MassClaw node. Published at
+  ``/.well-known/agent-facts.json``; signed with the instance key via an
+  optional ``AgentFactsIntegrityCredential`` so stock agents can verify
+  authenticity without fetching an external DID Document.
+- **Agent AgentFacts**: describes a specific registered agent. Each agent
+  has its own keypair (generated lazily on first AgentFacts request); the
+  private seed is ChaCha20-Poly1305-wrapped with the instance KEK and stored
+  in the agent's ``metadata`` JSONB column.
 
-- **Agent AgentFacts**: one per registered agent in the ``agents`` table. Each
-  agent gets its own keypair on first access; the private seed is wrapped with
-  the instance KEK and stored inside the agent's ``metadata`` JSONB column.
-
-The service caches the signed documents in Redis for
-``identity_facts_cache_ttl_seconds`` (default 60s) so discovery requests do not
-pay the signing cost on every call.
+Docs are cached in Redis for ``identity_facts_cache_ttl_seconds`` so discovery
+requests do not pay the signing cost on every call.
 """
 
 from __future__ import annotations
@@ -32,10 +31,10 @@ from app.exceptions import NotFoundError
 from app.identity.agent_facts import (
     AgentFacts,
     AgentFactsBuilder,
-    AgentLimits,
-    ToolDescriptor,
+    AgentFactsExtensions,
+    Skill,
 )
-from app.identity.did import build_did_from_public_key, parse_did
+from app.identity.did import build_did_key, parse_did
 from app.identity.did_resolver import DIDResolver, ResolvedAgent
 from app.identity.key_store import KeyStore, KeyStoreError
 from app.identity.nanda_index import NandaIndexClient, NandaIndexConfig
@@ -73,7 +72,7 @@ def get_instance_key_store() -> KeyStore:
 
 
 class IdentityService:
-    """Build, sign, and cache AgentFacts documents for the instance and per-agent."""
+    """Build, sign, and cache AgentFacts v1 documents for the instance and per-agent."""
 
     def __init__(
         self,
@@ -90,33 +89,24 @@ class IdentityService:
     # ------------------------------------------------------------------ Instance
 
     async def get_instance_facts(self) -> AgentFacts:
-        """Return the signed AgentFacts document describing this MassClaw node.
-
-        Cached in Redis for ``identity_facts_cache_ttl_seconds``; regenerated
-        automatically when the cached copy is missing or malformed.
-        """
         cached = await self._read_cache(_INSTANCE_FACTS_CACHE_KEY)
         if cached is not None:
             return cached
-
         facts = await self._build_instance_facts()
         await self._write_cache(_INSTANCE_FACTS_CACHE_KEY, facts)
         return facts
 
     async def invalidate_instance_facts(self) -> None:
-        """Drop the cached instance AgentFacts document — call after tool changes."""
         await self.redis.delete(_INSTANCE_FACTS_CACHE_KEY)
 
     # ------------------------------------------------------------------ Agents
 
     async def get_agent_facts(self, agent_id: uuid.UUID | str) -> AgentFacts:
-        """Return the signed AgentFacts document for a specific agent."""
         agent_id_str = str(agent_id)
         cache_key = _AGENT_FACTS_CACHE_KEY_FMT.format(agent_id=agent_id_str)
         cached = await self._read_cache(cache_key)
         if cached is not None:
             return cached
-
         agent = await self._load_agent(agent_id_str)
         facts = await self._build_agent_facts(agent)
         await self._write_cache(cache_key, facts)
@@ -126,18 +116,11 @@ class IdentityService:
         await self.redis.delete(_AGENT_FACTS_CACHE_KEY_FMT.format(agent_id=str(agent_id)))
 
     async def ensure_agent_keypair(self, agent: Agent) -> KeyPair:
-        """Return the agent's keypair, generating + persisting it if missing.
-
-        The private seed is stored inside ``agent.metadata_[agent_facts_key]``
-        encrypted with the instance KEK. The public half plus the DID are stored
-        in cleartext alongside so the frontend can render them without
-        unwrapping.
-        """
+        """Return the agent's keypair, generating + persisting it if missing."""
         meta_entry = (agent.metadata_ or {}).get(_AGENT_KEY_METADATA_FIELD)
         if meta_entry and "wrapped_private_seed_hex" in meta_entry:
             wrapped = bytes.fromhex(meta_entry["wrapped_private_seed_hex"])
             seed = self._key_store.unwrap_agent_seed(wrapped)
-            # Derive public bytes rather than trusting the stored value.
             from app.identity.signer import load_private_key
 
             sk = load_private_key(seed)
@@ -146,7 +129,6 @@ class IdentityService:
             pub = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
             return KeyPair(private_seed=seed, public_bytes=pub)
 
-        # Generate a fresh keypair.
         kp = self._key_store.generate_agent_keypair(str(agent.agent_id)).keypair
         try:
             wrapped = self._key_store.wrap_agent_seed(kp.private_seed)
@@ -157,11 +139,10 @@ class IdentityService:
         metadata[_AGENT_KEY_METADATA_FIELD] = {
             "wrapped_private_seed_hex": wrapped.hex(),
             "public_key_multibase": encode_multibase(kp.public_bytes),
-            "did": build_did_from_public_key(kp.public_bytes),
+            "did": build_did_key(kp.public_bytes),
             "key_created_at": _utc_now_iso(),
         }
         agent.metadata_ = metadata
-        # SQLAlchemy needs an explicit flag for mutable JSONB in-place updates.
         from sqlalchemy.orm.attributes import flag_modified
 
         flag_modified(agent, "metadata_")
@@ -174,23 +155,21 @@ class IdentityService:
         self,
         did: str,
         *,
+        username_hint: str | None = None,
         well_known_url_hint: str | None = None,
     ) -> ResolvedAgent:
-        """Resolve a DID to a verified AgentFacts document.
-
-        Tries the local agent registry first, then the NANDA Index (when
-        enabled), then a well-known URL hint. Results are cached in Redis
-        for ``nanda_index_resolve_cache_ttl_seconds`` — enough to keep
-        lookups fast without outliving key rotations.
-        """
+        """Resolve a DID to a verified AgentFacts document."""
         cache_key = _resolve_cache_key(did)
         cached = await self._read_cache(cache_key)
         if cached is not None:
-            source = "cache"
-            return ResolvedAgent(did=did, agent_facts=cached, source=source)
+            return ResolvedAgent(did=did, agent_facts=cached, source="cache")
 
         resolver = self._build_resolver()
-        resolved = await resolver.resolve(did, well_known_url_hint=well_known_url_hint)
+        resolved = await resolver.resolve(
+            did,
+            username_hint=username_hint,
+            well_known_url_hint=well_known_url_hint,
+        )
         await self._write_cache(
             cache_key,
             resolved.agent_facts,
@@ -204,11 +183,12 @@ class IdentityService:
     def _build_resolver(self) -> DIDResolver:
         local = _LocalRegistryAdapter(self)
         index: NandaIndexClient | None = None
-        if self._settings.nanda_index_enabled:
+        if self._settings.nanda_index_enabled and self._settings.nanda_index_base_url:
             index = NandaIndexClient(
                 NandaIndexConfig(
                     base_url=self._settings.nanda_index_base_url,
                     api_token=self._settings.nanda_index_api_token,
+                    session_cookie=self._settings.nanda_index_session_cookie,
                     retry_attempts=self._settings.nanda_index_retry_attempts,
                 )
             )
@@ -220,12 +200,8 @@ class IdentityService:
         )
 
     async def _lookup_agent_facts_by_did(self, did: str) -> AgentFacts | None:
-        """Return a local agent's AgentFacts if its DID matches, else None.
-
-        Used as the LocalRegistry strategy for :class:`DIDResolver`. Matches
-        on the DID stored in ``agent.metadata_[agent_facts_key][did]``.
-        """
-        parse_did(did)  # Validate shape.
+        """Return a local agent's AgentFacts if its DID matches, else None."""
+        parse_did(did)
         from sqlalchemy import select
 
         result = await self.session.execute(
@@ -239,29 +215,38 @@ class IdentityService:
     # ------------------------------------------------------------------ NANDA registration
 
     async def register_instance_with_nanda_index(self) -> dict[str, Any]:
-        """Publish this instance's AgentFacts to the configured NANDA Index.
+        """Publish our AgentFacts pointer to the NANDA Index.
 
-        Callers are responsible for deciding when to call this (typically once
-        on startup if ``nanda_index_register_on_startup`` is true). Returns the
-        raw Index response for logging.
+        The Index stores only the ``agent_facts_link`` pointer + ``username``.
+        The AgentFacts document itself must already be live at the URL we
+        advertise (``identity_public_base_url/.well-known/agent-facts.json``).
         """
         if not self._settings.nanda_index_enabled:
             raise IdentityServiceError("NANDA Index is disabled (set nanda_index_enabled=true to register)")
+        if not self._settings.nanda_index_username:
+            raise IdentityServiceError(
+                "nanda_index_username must be set before registering — this is the handle "
+                "you reserve on the NANDA Index"
+            )
         client = NandaIndexClient(
             NandaIndexConfig(
                 base_url=self._settings.nanda_index_base_url,
                 api_token=self._settings.nanda_index_api_token,
+                session_cookie=self._settings.nanda_index_session_cookie,
                 retry_attempts=self._settings.nanda_index_retry_attempts,
             )
         )
-        facts = await self.get_instance_facts()
         base = self._settings.identity_public_base_url.rstrip("/")
         facts_url = f"{base}/.well-known/agent-facts.json"
-        result = await client.register(facts, facts_url=facts_url)
+        result = await client.register(
+            username=self._settings.nanda_index_username,
+            agent_facts_link=facts_url,
+        )
         logger.info(
             "nanda_index_instance_registered",
-            did=result.did,
-            facts_url=result.facts_url,
+            username=result.username,
+            mongo_id=result.mongo_id,
+            facts_url=result.agent_facts_link,
         )
         return result.raw_response
 
@@ -277,23 +262,26 @@ class IdentityService:
             report["errors"].append(f"document failed schema validation: {exc}")
             return report
 
-        if doc.proof is None:
-            report["errors"].append("document has no proof block")
+        if not doc.verifiable_credentials:
+            report["errors"].append("document has no integrity credential in verifiable_credentials[]")
             return report
 
-        try:
-            ok = doc.verify()
-        except Exception as exc:
-            report["errors"].append(f"verification raised: {exc}")
-            return report
+        any_valid = False
+        for cred in doc.verifiable_credentials:
+            try:
+                ok = doc.verify_integrity(cred)
+            except Exception as exc:
+                report["errors"].append(f"credential verification raised: {exc}")
+                continue
+            if ok:
+                any_valid = True
+                break
+            report["errors"].append("integrity credential signature did not verify")
 
-        report["valid"] = ok
-        report["issuer"] = doc.issuer
-        report["subject"] = doc.credential_subject.id
-        report["valid_from"] = doc.valid_from
-        report["valid_until"] = doc.valid_until
-        if not ok:
-            report["errors"].append("Ed25519 signature did not verify")
+        report["valid"] = any_valid
+        report["provider_did"] = doc.provider.did
+        report["agent_id"] = doc.id
+        report["label"] = doc.label
         return report
 
     # ------------------------------------------------------------------ Internals
@@ -314,81 +302,97 @@ class IdentityService:
 
     async def _build_instance_facts(self) -> AgentFacts:
         keypair = self._key_store.instance_keypair()
-        did = build_did_from_public_key(keypair.public_bytes)
-        now = _utc_now_iso()
-        valid_until = _iso_n_days_from_now(self._settings.identity_facts_validity_days)
+        provider_did = build_did_key(keypair.public_bytes)
+        base = self._settings.identity_public_base_url.rstrip("/")
 
-        tools = _load_tool_descriptors()
-        endpoints = _compose_instance_endpoints(self._settings.identity_public_base_url)
+        skills = _skills_from_registry()
+        extensions = AgentFactsExtensions(
+            example_requests=_INSTANCE_EXAMPLE_REQUESTS,
+            error_schema=_INSTANCE_ERROR_SCHEMA,
+            nanda_index_handle=self._settings.nanda_index_username or None,
+        )
 
         builder = (
             AgentFactsBuilder(
-                subject_did=did,
-                issuer_did=did,
-                document_id=f"urn:massclaw:instance:{did.split(':')[-1]}",
-                name=self._settings.identity_instance_name,
+                agent_id=f"urn:agent:massclaw:{_safe_name(self._settings.identity_instance_name)}",
+                label=self._settings.identity_instance_name,
                 description=self._settings.identity_instance_description,
+                version=self._settings.app_version,
+                provider_name=self._settings.identity_instance_name,
+                provider_url=base,
             )
-            .capabilities(*_INSTANCE_CAPABILITIES)
-            .tools(tools)
-            .endpoints(endpoints)
-            .trust_zone(self._settings.identity_trust_zone)
-            .public_key(keypair.public_bytes)
-            .example_requests(_INSTANCE_EXAMPLE_REQUESTS)
-            .error_schema(_INSTANCE_ERROR_SCHEMA)
-            .validity(valid_from=now, valid_until=valid_until)
+            .provider_did(provider_did)
+            .endpoints(
+                [
+                    base,
+                    f"{base}/api/v1",
+                    f"{base}/api/v1/mcp",
+                    f"{base}/.well-known/agent-facts.json",
+                ]
+            )
+            .modalities("text", "structured-output", "tool-use", "workflow")
+            .auth_methods("bearer", "api-key", "agent-facts-signature")
+            .skills(skills)
+            .documentation_url(f"{base}/docs")
+            .certification(self._settings.identity_trust_zone)
+            .extensions(extensions)
         )
-        if self._settings.identity_nanda_index_handle:
-            builder.nanda_index_handle(self._settings.identity_nanda_index_handle)
-
         return builder.build_and_sign(keypair)
 
     async def _build_agent_facts(self, agent: Agent) -> AgentFacts:
         keypair = await self.ensure_agent_keypair(agent)
-        did = build_did_from_public_key(keypair.public_bytes)
+        did = build_did_key(keypair.public_bytes)
+        base = self._settings.identity_public_base_url.rstrip("/")
 
-        # Convert the agent's ``supported_tools`` + ``input_schema`` into the
-        # AgentFacts tool descriptor shape. Supported_tools is usually a list
-        # of tool names; we don't require per-tool schemas here.
         supported = agent.supported_tools or []
-        tools: list[ToolDescriptor] = []
+        skills: list[Skill] = []
         for entry in supported:
             if isinstance(entry, dict) and "name" in entry:
-                tools.append(
-                    ToolDescriptor(
-                        name=str(entry["name"]),
+                skills.append(
+                    Skill(
+                        id=str(entry["name"]),
                         description=str(entry.get("description", "")),
-                        input_schema=entry.get("input_schema"),
-                        output_schema=entry.get("output_schema"),
+                        **{
+                            "inputModes": list(entry.get("input_modes", ["text"])),
+                            "outputModes": list(entry.get("output_modes", ["text"])),
+                        },
                     )
                 )
             elif isinstance(entry, str):
-                tools.append(ToolDescriptor(name=entry, description=f"{entry} tool"))
+                skills.append(
+                    Skill(
+                        id=entry,
+                        description=f"{entry} tool",
+                        **{"inputModes": ["text"], "outputModes": ["text"]},
+                    )
+                )
 
-        endpoints = _compose_agent_endpoints(agent, self._settings.identity_public_base_url)
-        limits = _limits_from_cost_profile(agent.cost_profile or {}, agent.latency_profile or {})
+        modalities = _modalities_from_capabilities(agent.capabilities or [])
+        limits = _limits_payload_from_cost_profile(agent.cost_profile or {})
         trust_zone = _trust_zone_for_agent(agent)
 
-        now = _utc_now_iso()
-        valid_until = _iso_n_days_from_now(self._settings.identity_facts_validity_days)
+        extensions = AgentFactsExtensions(
+            limits=limits if limits else None,
+            example_requests=[],
+        )
 
         builder = (
             AgentFactsBuilder(
-                subject_did=did,
-                issuer_did=did,
-                document_id=f"urn:massclaw:agent:{agent.agent_id}",
-                name=agent.name,
+                agent_id=f"urn:agent:massclaw:{agent.agent_id}",
+                label=agent.name,
                 description=agent.description,
+                version=agent.version or "1.0.0",
+                provider_name=self._settings.identity_instance_name,
+                provider_url=base,
             )
-            .capabilities(*(agent.capabilities or []))
-            .tools(tools)
-            .endpoints(endpoints)
-            .trust_zone(trust_zone)
-            .public_key(keypair.public_bytes)
-            .limits(limits)
-            .validity(valid_from=now, valid_until=valid_until)
+            .provider_did(did)
+            .endpoint(f"{base}/api/v1/agents/{agent.agent_id}")
+            .modalities(*modalities)
+            .auth_methods("bearer", "api-key")
+            .skills(skills)
+            .certification(trust_zone)
+            .extensions(extensions)
         )
-
         return builder.build_and_sign(keypair)
 
     async def _read_cache(self, key: str) -> AgentFacts | None:
@@ -430,23 +434,6 @@ def _resolve_cache_key(did: str) -> str:
 
 # ------------------------------------------------------------------ helpers
 
-_INSTANCE_CAPABILITIES: list[str] = [
-    "workflow.submit",
-    "workflow.status",
-    "workflow.result",
-    "memory.query",
-    "memory.write",
-    "memory.by_hash",
-    "agents.list",
-    "agents.search",
-    "agents.discover",
-    "audit.search",
-    "policy.evaluate",
-    "tools.list",
-    "tools.invoke",
-    "mcp.server",
-]
-
 _INSTANCE_ERROR_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["error", "message", "next_steps"],
@@ -462,6 +449,7 @@ _INSTANCE_ERROR_SCHEMA: dict[str, Any] = {
     },
 }
 
+
 _INSTANCE_EXAMPLE_REQUESTS: list[dict[str, Any]] = [
     {
         "name": "submit_workflow",
@@ -473,88 +461,128 @@ _INSTANCE_EXAMPLE_REQUESTS: list[dict[str, Any]] = [
             "budget_usd": 1.0,
         },
     },
-    {
-        "name": "poll_status",
-        "method": "GET",
-        "path": "/api/v1/workflows/{workflow_id}/status",
-    },
-    {
-        "name": "read_result",
-        "method": "GET",
-        "path": "/api/v1/workflows/{workflow_id}/result",
-    },
+    {"name": "poll_status", "method": "GET", "path": "/api/v1/workflows/{workflow_id}/status"},
+    {"name": "read_result", "method": "GET", "path": "/api/v1/workflows/{workflow_id}/result"},
     {
         "name": "query_memory",
         "method": "POST",
         "path": "/api/v1/memory/query",
         "body": {"query": "what is the deadline", "k": 10},
     },
+    {
+        "name": "resolve_did",
+        "method": "GET",
+        "path": "/api/v1/identity/resolve?did=did:key:z...",
+    },
 ]
 
 
-def _compose_instance_endpoints(base_url: str) -> dict[str, str]:
-    base = base_url.rstrip("/")
-    return {
-        "http": base,
-        "api": f"{base}/api/v1",
-        "docs": f"{base}/docs",
-        "mcp": f"{base}/api/v1/mcp",
-        "memory": f"{base}/api/v1/memory",
-        "workflows": f"{base}/api/v1/workflows",
-        "agents": f"{base}/api/v1/agents",
-        "agent_facts": f"{base}/.well-known/agent-facts.json",
+def _skills_from_registry() -> list[Skill]:
+    """Return the platform skill catalogue as AgentFacts v1 ``Skill`` objects."""
+    platform_skills = [
+        Skill(
+            id="workflow.submit",
+            description="Submit a multi-agent workflow with optional budget and constraints.",
+            **{"inputModes": ["text", "structured-output"], "outputModes": ["structured-output"]},
+        ),
+        Skill(
+            id="workflow.status",
+            description="Read current status and progress of a running workflow.",
+            **{"inputModes": ["text"], "outputModes": ["structured-output"]},
+        ),
+        Skill(
+            id="workflow.result",
+            description="Fetch the final result of a completed workflow.",
+            **{"inputModes": ["text"], "outputModes": ["structured-output", "text"]},
+        ),
+        Skill(
+            id="memory.query",
+            description="Semantic + vector search over shared memory with provenance chains.",
+            **{"inputModes": ["text"], "outputModes": ["structured-output"]},
+        ),
+        Skill(
+            id="memory.write",
+            description="Write a signed memory record into the shared CRDT store.",
+            **{"inputModes": ["structured-output"], "outputModes": ["structured-output"]},
+        ),
+        Skill(
+            id="agents.search",
+            description="Discover agents by capability, trust score, and cost.",
+            **{"inputModes": ["text"], "outputModes": ["structured-output"]},
+        ),
+        Skill(
+            id="identity.resolve",
+            description="Resolve a DID to a verified AgentFacts document.",
+            **{"inputModes": ["text"], "outputModes": ["structured-output"]},
+        ),
+        Skill(
+            id="policy.evaluate",
+            description="Evaluate whether a proposed action is allowed by current policy rules.",
+            **{"inputModes": ["structured-output"], "outputModes": ["structured-output"]},
+        ),
+    ]
+    try:
+        from app.tools.registry import get_tool_registry
+
+        registry = get_tool_registry()
+    except Exception as exc:
+        logger.warning("tool_registry_unavailable_for_agent_facts", error=str(exc))
+        return platform_skills
+
+    seen = {s.id for s in platform_skills}
+    for tool in registry.list_tools():
+        name = getattr(tool, "name", None) or getattr(tool, "tool_name", None)
+        if not name or name in seen:
+            continue
+        description = getattr(tool, "description", "") or f"{name} tool"
+        platform_skills.append(
+            Skill(
+                id=str(name),
+                description=str(description),
+                **{"inputModes": ["text"], "outputModes": ["text"]},
+            )
+        )
+        seen.add(name)
+    return platform_skills
+
+
+def _modalities_from_capabilities(capabilities: list[str]) -> list[str]:
+    modality_map = {
+        "code_execution": "code",
+        "web_search": "text",
+        "analysis": "structured-output",
+        "research": "text",
+        "test": "text",
+        "image": "image",
+        "audio": "audio",
+        "video": "video",
     }
+    out: list[str] = []
+    for cap in capabilities:
+        key = cap.lower().strip()
+        mod = modality_map.get(key, "text")
+        if mod not in out:
+            out.append(mod)
+    if not out:
+        out.append("text")
+    return out
 
 
-def _compose_agent_endpoints(agent: Agent, base_url: str) -> dict[str, str]:
-    base = base_url.rstrip("/")
-    endpoints: dict[str, str] = {
-        "facts": f"{base}/api/v1/agents/{agent.agent_id}/agent-facts.json",
-    }
-    if agent.endpoint:
-        # The agent's declared endpoint might be an absolute URL (external
-        # agent) or an opaque handler identifier (internal). We expose it
-        # under 'agent_endpoint' so the AgentFacts surface is self-describing
-        # without losing the provenance of the original value.
-        endpoints["agent_endpoint"] = agent.endpoint
-    if agent.protocol_type:
-        endpoints["protocol"] = agent.protocol_type
-    return endpoints
-
-
-def _limits_from_cost_profile(
-    cost_profile: dict[str, Any],
-    latency_profile: dict[str, Any],
-) -> AgentLimits:
-    limits = AgentLimits()
-    # max_transaction_usd: if an agent declares a per-call cost, its declared cap
-    # is interpreted as a soft limit; otherwise we leave it unset.
-    max_tx = cost_profile.get("max_transaction_usd")
-    if isinstance(max_tx, (int, float)):
-        limits.max_transaction_usd = float(max_tx)
-    cost_cap = cost_profile.get("cost_cap_per_hour_usd")
-    if isinstance(cost_cap, (int, float)):
-        limits.cost_cap_per_hour_usd = float(cost_cap)
-    rate = cost_profile.get("rate_limit_per_min")
-    if isinstance(rate, int):
-        limits.rate_limit_per_min = rate
-    concurrent = cost_profile.get("max_concurrent_workflows")
-    if isinstance(concurrent, int):
-        limits.max_concurrent_workflows = concurrent
-    # latency_profile is not surfaced as a hard limit yet — it remains informational.
-    _ = latency_profile
+def _limits_payload_from_cost_profile(cost_profile: dict[str, Any]) -> dict[str, Any]:
+    limits: dict[str, Any] = {}
+    for key in (
+        "max_transaction_usd",
+        "rate_limit_per_min",
+        "cost_cap_per_hour_usd",
+        "max_concurrent_workflows",
+    ):
+        value = cost_profile.get(key)
+        if isinstance(value, (int, float)):
+            limits[key] = value
     return limits
 
 
 def _trust_zone_for_agent(agent: Agent) -> str:
-    """Derive the declared trust zone for an AgentFacts document.
-
-    We lean on the existing ``safety_level`` integer: agents declared at
-    safety level >=7 are treated as ``verified-enterprise``, 4-6 as
-    ``verified-community``, and below as ``unverified``. Callers who need
-    a different scheme can override by writing ``trust_zone`` into the
-    agent's metadata.
-    """
     override = (agent.metadata_ or {}).get("trust_zone")
     if isinstance(override, str) and override:
         return override
@@ -565,42 +593,11 @@ def _trust_zone_for_agent(agent: Agent) -> str:
     return "unverified"
 
 
-def _load_tool_descriptors() -> list[ToolDescriptor]:
-    """Return the platform tool catalogue as AgentFacts ``ToolDescriptor`` objects."""
-    try:
-        from app.tools.registry import get_tool_registry
-
-        registry = get_tool_registry()
-    except Exception as exc:
-        logger.warning("tool_registry_unavailable_for_agent_facts", error=str(exc))
-        return []
-    descriptors: list[ToolDescriptor] = []
-    for tool in registry.list_tools():
-        name = getattr(tool, "name", None) or getattr(tool, "tool_name", None)
-        if not name:
-            continue
-        description = getattr(tool, "description", "") or ""
-        input_schema = getattr(tool, "input_schema", None)
-        output_schema = getattr(tool, "output_schema", None)
-        descriptors.append(
-            ToolDescriptor(
-                name=str(name),
-                description=str(description),
-                input_schema=input_schema if isinstance(input_schema, dict) else None,
-                output_schema=output_schema if isinstance(output_schema, dict) else None,
-            )
-        )
-    return descriptors
-
-
 def _utc_now_iso() -> str:
     from datetime import UTC, datetime
 
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _iso_n_days_from_now(days: int) -> str:
-    from datetime import UTC, datetime, timedelta
-
-    dt = datetime.now(UTC) + timedelta(days=days)
-    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _safe_name(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "-" for c in name.lower()).strip("-") or "instance"
