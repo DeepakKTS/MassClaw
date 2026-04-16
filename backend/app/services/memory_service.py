@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.events import EventBus
 from app.core.logging import get_logger
+from app.crdt.store import CRDTStore
 from app.embeddings.service import get_embedding_service
 from app.exceptions import NotFoundError
 from app.models.base import MemoryType
@@ -92,23 +93,30 @@ class MemoryService:
         if data.ttl_hours:
             expires_at = datetime.now(UTC) + timedelta(hours=data.ttl_hours)
 
-        # 5. Create record
-        record = MemoryRecord(
+        # 5. Create record via the CRDT write path. When the caller supplies
+        #    author_did + signature + hash, the store verifies the Ed25519
+        #    signature and rejects any mismatch before persisting. When those
+        #    fields are omitted the record is stored as a legacy unsigned row
+        #    (backward compatible) — the content hash is still computed and
+        #    stored when an author_did is declared, so content-addressed
+        #    retrieval works for any author-anchored write.
+        store = CRDTStore(self.session)
+        record = await store.put(
             workflow_id=data.workflow_id,
             source_agent_id=data.source_agent_id,
             memory_type=data.memory_type,
             content=data.content,
-            embedding=embedding,
-            metadata_=data.metadata,
             confidence=data.confidence,
-            freshness=1.0,  # Freshness starts at 1.0 and decays over time
+            metadata=data.metadata,
+            parent_hashes=data.parent_hashes,
+            author_did=data.author_did,
+            precomputed_hash=data.content_hash,
+            precomputed_signature=data.signature,
+            embedding=embedding,
             version=version,
             parent_version_id=data.parent_version_id,
             expires_at=expires_at,
         )
-        self.session.add(record)
-        await self.session.flush()
-        await self.session.refresh(record)
 
         # 6. Invalidate caches for this workflow
         await self._invalidate_cache(data.workflow_id)
