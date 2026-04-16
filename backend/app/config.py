@@ -156,6 +156,10 @@ class Settings(BaseSettings):
     # Federation peers — comma-separated base URLs for other MassClaw nodes
     # participating in CRDT gossip. Consumed by the Day 9 gossip task.
     massclaw_federation_peers: str = ""
+    # Peer DID allowlist for sync endpoints. Comma-separated did:key / did:nanda
+    # strings. Empty → accept any valid signature (local-dev). Populate for
+    # production to refuse signatures from unknown peers.
+    massclaw_peer_allowlist: str = ""
 
     @field_validator("massclaw_federation_peers", mode="before")
     @classmethod

@@ -13,6 +13,10 @@ from app.api.workflows import router as workflows_router
 
 api_router.include_router(agents_router, prefix="/agents", tags=["Agents"])
 api_router.include_router(memory_router, prefix="/memory", tags=["Memory"])
+
+from app.api.memory_sync import router as memory_sync_router
+
+api_router.include_router(memory_sync_router, prefix="/memory/sync", tags=["Memory Sync"])
 api_router.include_router(tasks_router, prefix="/tasks", tags=["Tasks"])
 api_router.include_router(trust_router, prefix="/trust", tags=["Trust"])
 api_router.include_router(wallet_router, prefix="/wallet", tags=["Wallet"])

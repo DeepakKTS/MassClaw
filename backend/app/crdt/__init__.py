@@ -34,12 +34,22 @@ from app.crdt.merkle import (
     bucket_for_hash,
     summarise_hashes,
 )
+from app.crdt.peer_auth import (
+    PEER_AUTH_WINDOW_SECONDS,
+    PEER_DID_HEADER,
+    PEER_SIG_HEADER,
+    PEER_TS_HEADER,
+    VerifiedPeer,
+    require_verified_peer,
+    verify_peer_request,
+)
 from app.crdt.store import (
     CRDTStore,
     CRDTStoreError,
     SignatureMismatchError,
     UnknownAuthorError,
 )
+from app.crdt.sync import SyncService, SyncServiceError, TooManyHashesRequested
 
 __all__ = [
     "BUCKET_COUNT",
@@ -48,10 +58,20 @@ __all__ = [
     "CanonicalBody",
     "HASH_MULTIBASE_PREFIX",
     "MerkleSummary",
+    "PEER_AUTH_WINDOW_SECONDS",
+    "PEER_DID_HEADER",
+    "PEER_SIG_HEADER",
+    "PEER_TS_HEADER",
     "SignatureMismatchError",
+    "SyncService",
+    "SyncServiceError",
+    "TooManyHashesRequested",
     "UnknownAuthorError",
+    "VerifiedPeer",
     "bucket_for_hash",
     "build_canonical_body",
     "compute_content_hash",
+    "require_verified_peer",
     "summarise_hashes",
+    "verify_peer_request",
 ]
