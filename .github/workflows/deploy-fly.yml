@@ -1,0 +1,121 @@
+name: Deploy (Fly.io × 3 regions)
+
+# Deploys MassClaw to the three Fly.io regional apps (us, eu, ap) on every
+# push to main — but only after CI green-lights the build. Each region runs
+# its own Postgres + Redis (configured via `fly secrets`), so the three
+# deployments are independent failure domains.
+#
+# Required repository secrets:
+#   FLY_API_TOKEN_US   — per-app deploy token from `fly tokens create deploy --app massclaw-us`
+#   FLY_API_TOKEN_EU   — same for massclaw-eu
+#   FLY_API_TOKEN_AP   — same for massclaw-ap
+#
+# If any of the secrets are missing the corresponding job is skipped — the
+# other regions still deploy, so a single missing token doesn't block the
+# whole fleet.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "deploy/fly/**"
+      - ".github/workflows/deploy-fly.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  # Re-run the backend CI job before deploying so a broken push never
+  # reaches production. The CI workflow name must match what ci.yml sets.
+  wait_for_ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for backend CI to succeed on this SHA
+        uses: fountainhead/action-wait-for-check@v1.2.0
+        id: wait
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checkName: Backend
+          ref: ${{ github.sha }}
+          timeoutSeconds: 1800
+          intervalSeconds: 15
+      - name: Fail fast if CI did not succeed
+        if: steps.wait.outputs.conclusion != 'success'
+        run: exit 1
+
+  deploy-us:
+    name: Deploy → massclaw-us
+    needs: wait_for_ci
+    runs-on: ubuntu-latest
+    environment: production-us
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if no Fly token configured
+        id: guard
+        run: |
+          if [ -z "${{ secrets.FLY_API_TOKEN_US }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::FLY_API_TOKEN_US not set — skipping us deploy"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.skip == 'false'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - if: steps.guard.outputs.skip == 'false'
+        name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_US }}
+        run: flyctl deploy --remote-only --config deploy/fly/node-us.toml
+
+  deploy-eu:
+    name: Deploy → massclaw-eu
+    needs: wait_for_ci
+    runs-on: ubuntu-latest
+    environment: production-eu
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if no Fly token configured
+        id: guard
+        run: |
+          if [ -z "${{ secrets.FLY_API_TOKEN_EU }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::FLY_API_TOKEN_EU not set — skipping eu deploy"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.skip == 'false'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - if: steps.guard.outputs.skip == 'false'
+        name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_EU }}
+        run: flyctl deploy --remote-only --config deploy/fly/node-eu.toml
+
+  deploy-ap:
+    name: Deploy → massclaw-ap
+    needs: wait_for_ci
+    runs-on: ubuntu-latest
+    environment: production-ap
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if no Fly token configured
+        id: guard
+        run: |
+          if [ -z "${{ secrets.FLY_API_TOKEN_AP }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::FLY_API_TOKEN_AP not set — skipping ap deploy"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.skip == 'false'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - if: steps.guard.outputs.skip == 'false'
+        name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_AP }}
+        run: flyctl deploy --remote-only --config deploy/fly/node-ap.toml

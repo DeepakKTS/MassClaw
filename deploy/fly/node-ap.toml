@@ -1,0 +1,64 @@
+# Fly.io configuration for the Asia-Pacific MassClaw federation node.
+# See deploy/fly/node-us.toml for full first-time setup instructions.
+
+app = "massclaw-ap"
+primary_region = "sin"           # Singapore — APAC anycast entry.
+
+[build]
+  dockerfile = "backend/Dockerfile"
+  build-target = ""
+
+[env]
+  PORT = "8000"
+  WEB_CONCURRENCY = "2"
+  LOG_FORMAT = "json"
+  AUTH_REQUIRED = "true"
+  IDENTITY_PUBLIC_BASE_URL = "https://massclaw-ap.fly.dev"
+  IDENTITY_INSTANCE_KEY_PATH = "/data/instance.key"
+  IDENTITY_TRUST_ZONE = "verified-federation"
+  IDENTITY_INSTANCE_NAME = "MassClaw (AP)"
+  NANDA_INDEX_ENABLED = "false"
+  MASSCLAW_FEDERATION_PEERS = "https://massclaw-us.fly.dev,https://massclaw-eu.fly.dev"
+
+[processes]
+  web = "sh -c 'alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}'"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8000
+  processes = ["web"]
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1
+
+[mounts]
+  source = "massclaw_ap_data"
+  destination = "/data"
+  initial_size = "1"

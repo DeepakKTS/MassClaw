@@ -12,6 +12,8 @@ from app.models.base import MemoryType
 from app.models.memory import MemoryRecord
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.memory import (
+    FactResolutionRequest,
+    FactResolutionResponse,
     MemoryQueryRequest,
     MemoryResponse,
     MemorySearchResult,
@@ -47,6 +49,39 @@ async def query_memory(
     where freshness_factor = exp(-lambda * hours_since_creation).
     """
     return await service.query_memory(query)
+
+
+@router.post(
+    "/facts/resolve",
+    response_model=FactResolutionResponse,
+    summary="Resolve a fact across conflicting CRDT records under a chosen read mode.",
+)
+async def resolve_fact(
+    request: FactResolutionRequest,
+    service: MemoryService = Depends(get_memory_service),
+) -> FactResolutionResponse:
+    """Answer a question against the CRDT set with explicit mode semantics.
+
+    The CRDT converges on a *set* of signed records; this endpoint turns
+    that set into a single actionable outcome based on ``mode``:
+
+    - ``planning`` — return one winner (``chosen``), ranked by
+      ``confidence × freshness × author_trust``. For agents that need an
+      answer to proceed.
+    - ``audit`` — return every candidate with its rank and provenance.
+      For dashboards, the policy engine, and human auditors. No winner
+      is picked (``chosen`` is null).
+    - ``sensitive`` — return no winner and set ``requires_hitl=true``
+      when two candidates tie at high confidence. For actions whose
+      mistake cannot be cheaply undone (payments, deletions, external
+      messages). Callers should route the response into the HITL
+      approvals queue.
+
+    Every response includes the full ranked candidate list regardless
+    of mode, so callers can surface the "evidence" without a second
+    round-trip.
+    """
+    return await service.resolve_fact(request)
 
 
 @router.get("/workflow/{workflow_id}", response_model=PaginatedResponse[MemoryResponse])

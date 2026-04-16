@@ -20,6 +20,7 @@ __all__ = [
     "ActorType",
     "PolicyAction",
     "PolicyRuleType",
+    "ReadMode",
     "RecordState",
 ]
 
@@ -184,3 +185,23 @@ class RecordState(str, enum.Enum):
     SUPERSEDED = "superseded"
     HISTORICAL = "historical"
     TOMBSTONED = "tombstoned"
+
+
+class ReadMode(str, enum.Enum):
+    """How the memory layer resolves conflicting records on a read.
+
+    The CRDT store intentionally keeps every signed write — readers decide
+    what the 'truth' is by asking with the right mode:
+
+    - ``planning``: return a single winner, ranked by (freshness × confidence
+      × author trust). For agents that need *an* answer to proceed.
+    - ``audit``: return every candidate with its rank and provenance. For
+      judges, dashboards, and the policy engine.
+    - ``sensitive``: return nothing when a high-confidence conflict is
+      detected and force escalation to a human. For actions whose mistake
+      cannot be undone cheaply.
+    """
+
+    PLANNING = "planning"
+    AUDIT = "audit"
+    SENSITIVE = "sensitive"

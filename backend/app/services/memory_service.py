@@ -16,14 +16,22 @@ from app.core.logging import get_logger
 from app.crdt.store import CRDTStore
 from app.embeddings.service import get_embedding_service
 from app.exceptions import NotFoundError
-from app.models.base import MemoryType
+from app.models.agent import Agent
+from app.models.base import MemoryType, ReadMode, RecordState
 from app.models.memory import MemoryRecord
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.memory import (
+    FactResolutionRequest,
+    FactResolutionResponse,
     MemoryQueryRequest,
     MemoryResponse,
     MemorySearchResult,
     MemoryWriteRequest,
+    RankedCandidateOut,
+)
+from app.services.memory_fact_resolver import (
+    FactCandidate,
+    resolve_fact,
 )
 
 logger = get_logger(__name__)
@@ -175,6 +183,12 @@ class MemoryService:
             conditions.append(MemoryRecord.memory_type.in_(query.memory_types))
         if query.min_confidence > 0:
             conditions.append(MemoryRecord.confidence >= query.min_confidence)
+        # CRDT lifecycle filter. Defaults to [ACTIVE]; callers asking for the
+        # audit view pass additional states explicitly.
+        if query.include_states:
+            conditions.append(MemoryRecord.record_state.in_(query.include_states))
+        if query.author_did:
+            conditions.append(MemoryRecord.author_did == query.author_did)
 
         # Exclude expired records
         now = datetime.now(UTC)
@@ -232,6 +246,120 @@ class MemoryService:
         )
 
         return results
+
+    async def resolve_fact(self, request: FactResolutionRequest) -> FactResolutionResponse:
+        """Resolve a fact query under one of the three read modes.
+
+        Loads candidates via the same semantic search as :meth:`query_memory`
+        (so ``include_states`` / ``memory_types`` / ``workflow_id`` filters
+        apply), enriches each with its author's current trust score, and
+        hands them to the pure :func:`resolve_fact` resolver to pick the
+        outcome. The resolver returns a winner for planning, every
+        candidate for audit, and an HITL-escalation marker for sensitive
+        mode when two candidates tie at high confidence.
+        """
+        # Reuse the query path for discovery — same similarity / confidence
+        # / state filters apply. Audit mode should see every lifecycle state
+        # the caller listed, while planning/sensitive are ACTIVE-only.
+        include_states = list(request.include_states)
+        if request.mode == ReadMode.AUDIT and not include_states:
+            include_states = [RecordState.ACTIVE, RecordState.SUPERSEDED, RecordState.HISTORICAL]
+
+        search_request = MemoryQueryRequest(
+            query=request.subject,
+            workflow_id=request.workflow_id,
+            memory_types=request.memory_types,
+            min_similarity=request.min_similarity,
+            min_confidence=request.min_confidence,
+            top_k=request.top_k,
+            include_states=include_states,
+        )
+        search_results = await self.query_memory(search_request)
+
+        if not search_results:
+            return FactResolutionResponse(
+                mode=request.mode,
+                subject=request.subject,
+                chosen=None,
+                candidates=[],
+                requires_hitl=False,
+                conflict_detected=False,
+                reason="no memory records matched the subject query",
+            )
+
+        # Fetch each author's trust score in one round-trip.
+        agent_ids = {r.memory.source_agent_id for r in search_results if r.memory.source_agent_id is not None}
+        trust_by_agent: dict[uuid.UUID, float] = {}
+        if agent_ids:
+            trust_rows = await self.session.execute(
+                select(Agent.agent_id, Agent.trust_score).where(Agent.agent_id.in_(agent_ids))
+            )
+            trust_by_agent = {row[0]: float(row[1]) for row in trust_rows.all()}
+
+        candidates = [
+            FactCandidate(
+                memory_id=r.memory.memory_id,
+                content=r.memory.content,
+                confidence=float(r.memory.confidence),
+                author_did=r.memory.author_did,
+                author_trust=(trust_by_agent.get(r.memory.source_agent_id) if r.memory.source_agent_id else None),
+                record_state=r.memory.record_state,
+                content_hash=r.memory.content_hash,
+                created_at=r.memory.created_at,
+                similarity=float(r.similarity),
+            )
+            for r in search_results
+        ]
+
+        resolution = resolve_fact(
+            candidates,
+            mode=request.mode,
+            sensitive_min_confidence=request.sensitive_min_confidence,
+            sensitive_rank_delta=request.sensitive_rank_delta,
+        )
+
+        memory_by_id = {r.memory.memory_id: r.memory for r in search_results}
+
+        # Ranked candidate list for the response, in resolver-chosen order.
+        ranked_out: list[RankedCandidateOut] = []
+        similarity_by_id = {r.memory.memory_id: r.similarity for r in search_results}
+        for ranked in resolution.candidates:
+            cand = ranked.candidate
+            memory = memory_by_id.get(cand.memory_id)
+            if memory is None:
+                continue
+            ranked_out.append(
+                RankedCandidateOut(
+                    memory=memory,
+                    rank=ranked.rank,
+                    similarity=similarity_by_id.get(cand.memory_id, 0.0),
+                    freshness_factor=ranked.freshness_factor,
+                    effective_author_trust=ranked.effective_author_trust,
+                )
+            )
+
+        chosen_out: MemoryResponse | None = None
+        if resolution.chosen is not None:
+            chosen_out = memory_by_id.get(resolution.chosen.memory_id)
+
+        logger.info(
+            "memory_fact_resolved",
+            mode=request.mode.value,
+            candidates=len(ranked_out),
+            chosen=str(chosen_out.memory_id) if chosen_out else None,
+            conflict_detected=resolution.conflict_detected,
+            requires_hitl=resolution.requires_hitl,
+        )
+
+        return FactResolutionResponse(
+            mode=resolution.mode,
+            subject=request.subject,
+            chosen=chosen_out,
+            candidates=ranked_out,
+            requires_hitl=resolution.requires_hitl,
+            conflict_detected=resolution.conflict_detected,
+            reason=resolution.reason,
+        )
 
     async def get_workflow_memories(
         self,

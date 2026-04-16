@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.base import MemoryType, RecordState
+from app.models.base import MemoryType, ReadMode, RecordState
 
 
 class MemoryWriteRequest(BaseModel):
@@ -101,3 +101,56 @@ class MemorySearchResult(BaseModel):
     memory: MemoryResponse
     similarity: float
     relevance_score: float  # similarity * confidence * freshness
+
+
+class FactResolutionRequest(BaseModel):
+    """Ask the CRDT store to resolve a question against all known records.
+
+    The ``subject`` field is embedded and matched against every memory's
+    content vector; the ``mode`` selects how conflicts are resolved.
+    """
+
+    subject: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="The fact being asked about, e.g. 'what is the deadline?'.",
+    )
+    mode: ReadMode = Field(
+        default=ReadMode.PLANNING,
+        description="planning (pick one), audit (show all), or sensitive (HITL on conflict).",
+    )
+    workflow_id: uuid.UUID | None = None
+    memory_types: list[MemoryType] | None = None
+    min_similarity: float = Field(default=0.5, ge=0, le=1)
+    min_confidence: float = Field(default=0.0, ge=0, le=1)
+    top_k: int = Field(default=10, ge=1, le=100)
+    include_states: list[RecordState] = Field(
+        default_factory=lambda: [RecordState.ACTIVE],
+        description="Lifecycle states to include. Audit mode reads all supplied; "
+        "planning/sensitive modes only consider ACTIVE regardless.",
+    )
+    sensitive_min_confidence: float = Field(default=0.7, ge=0, le=1)
+    sensitive_rank_delta: float = Field(default=0.15, ge=0, le=1)
+
+
+class RankedCandidateOut(BaseModel):
+    """One ranked candidate in a fact resolution response."""
+
+    memory: MemoryResponse
+    rank: float
+    similarity: float
+    freshness_factor: float
+    effective_author_trust: float
+
+
+class FactResolutionResponse(BaseModel):
+    """Outcome of a fact resolution across the CRDT candidates."""
+
+    mode: ReadMode
+    subject: str
+    chosen: MemoryResponse | None = None
+    candidates: list[RankedCandidateOut] = Field(default_factory=list)
+    requires_hitl: bool = False
+    conflict_detected: bool = False
+    reason: str

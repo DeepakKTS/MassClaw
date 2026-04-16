@@ -153,6 +153,22 @@ class Settings(BaseSettings):
     nanda_index_resolve_cache_ttl_seconds: int = 300
     nanda_index_register_on_startup: bool = False
 
+    # Federation peers — comma-separated base URLs for other MassClaw nodes
+    # participating in CRDT gossip. Consumed by the Day 9 gossip task.
+    massclaw_federation_peers: str = ""
+
+    @field_validator("massclaw_federation_peers", mode="before")
+    @classmethod
+    def _coerce_federation_peers(cls, value: Any) -> str:
+        if isinstance(value, list):
+            return ",".join(str(v).strip() for v in value if v)
+        return str(value or "")
+
+    def federation_peer_urls(self) -> list[str]:
+        """Return the non-empty, trimmed list of peer base URLs."""
+        raw = self.massclaw_federation_peers or ""
+        return [p.strip().rstrip("/") for p in raw.split(",") if p.strip()]
+
     def validate_production_settings(self) -> None:
         """Validate settings for production safety. Called during app startup."""
         _INSECURE_JWT_DEFAULT = "change-me-in-production-use-a-secure-random-string"

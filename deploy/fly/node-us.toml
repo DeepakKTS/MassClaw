@@ -1,0 +1,85 @@
+# Fly.io configuration for the US MassClaw federation node.
+#
+# Boot cost: ~$0/mo at free tier (shared-cpu-1x@256mb, auto-suspend on idle).
+# If you outgrow the free tier, upgrade to shared-cpu-1x@1gb (~$3-5/mo).
+#
+# First-time setup (operator does this once per region):
+#   fly apps create massclaw-us --org personal
+#   fly secrets set \
+#       JWT_SECRET_KEY="$(openssl rand -hex 32)" \
+#       IDENTITY_KEY_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+#       ANTHROPIC_API_KEY="..." \
+#       --app massclaw-us
+#   fly postgres create --name massclaw-us-db --region iad --initial-cluster-size 1 --vm-size shared-cpu-1x --volume-size 1
+#   fly postgres attach massclaw-us-db --app massclaw-us
+#   fly redis create --name massclaw-us-redis --region iad  # or Upstash free tier
+#   fly deploy --config deploy/fly/node-us.toml
+#
+# Subsequent deploys: GitHub Actions handles on every push to main. See
+# .github/workflows/deploy-fly.yml.
+
+app = "massclaw-us"
+primary_region = "iad"           # Ashburn, VA — cheap US anycast entry.
+
+[build]
+  dockerfile = "backend/Dockerfile"
+  build-target = ""
+
+[env]
+  PORT = "8000"
+  WEB_CONCURRENCY = "2"
+  LOG_FORMAT = "json"
+  AUTH_REQUIRED = "true"
+  # Public URL this node advertises. Override if using a custom domain.
+  IDENTITY_PUBLIC_BASE_URL = "https://massclaw-us.fly.dev"
+  IDENTITY_INSTANCE_KEY_PATH = "/data/instance.key"
+  IDENTITY_TRUST_ZONE = "verified-federation"
+  IDENTITY_INSTANCE_NAME = "MassClaw (US)"
+  # NANDA_INDEX_ENABLED flips on when we've been accepted into the Quilt;
+  # until then it stays false and /.well-known/ + /memory/by-hash/ are
+  # enough for discovery.
+  NANDA_INDEX_ENABLED = "false"
+  MASSCLAW_FEDERATION_PEERS = "https://massclaw-eu.fly.dev,https://massclaw-ap.fly.dev"
+
+[processes]
+  web = "sh -c 'alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}'"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8000
+  processes = ["web"]
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1
+
+[mounts]
+  source = "massclaw_us_data"
+  destination = "/data"
+  initial_size = "1"  # GB — holds the instance Ed25519 key + any local state.
