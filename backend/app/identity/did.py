@@ -56,15 +56,11 @@ def public_key_from_did(did: str) -> bytes:
     """Extract the Ed25519 public key embedded in a did:nanda DID."""
     parsed = parse_did(did)
     if parsed.method != DID_METHOD:
-        raise MalformedDIDError(
-            f"only did:{DID_METHOD}: is supported here, got did:{parsed.method}:"
-        )
+        raise MalformedDIDError(f"only did:{DID_METHOD}: is supported here, got did:{parsed.method}:")
     try:
         pub = decode_multibase(parsed.identifier)
     except Exception as exc:
         raise MalformedDIDError(f"cannot decode DID identifier: {exc}") from exc
     if len(pub) != 32:
-        raise MalformedDIDError(
-            f"embedded key must be 32 bytes (Ed25519 public), got {len(pub)}"
-        )
+        raise MalformedDIDError(f"embedded key must be 32 bytes (Ed25519 public), got {len(pub)}")
     return pub

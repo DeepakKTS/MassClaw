@@ -59,11 +59,7 @@ class KeyStore:
         instance_key_path: str | Path | None = None,
         key_encryption_key: bytes | None = None,
     ) -> None:
-        resolved_path = (
-            instance_key_path
-            or os.getenv(_ENV_INSTANCE_KEY_PATH)
-            or _DEFAULT_INSTANCE_KEY_PATH
-        )
+        resolved_path = instance_key_path or os.getenv(_ENV_INSTANCE_KEY_PATH) or _DEFAULT_INSTANCE_KEY_PATH
         self._instance_key_path = Path(resolved_path)
         self._kek = key_encryption_key or _load_kek_from_env()
         self._instance_keypair: KeyPair | None = None
@@ -78,8 +74,7 @@ class KeyStore:
             seed = self._instance_key_path.read_bytes()
             if len(seed) != 32:
                 raise KeyStoreError(
-                    f"instance key at {self._instance_key_path} is corrupt "
-                    f"(expected 32 bytes, got {len(seed)})"
+                    f"instance key at {self._instance_key_path} is corrupt (expected 32 bytes, got {len(seed)})"
                 )
             priv = load_private_key(seed)
             pub = priv.public_key()
@@ -102,9 +97,7 @@ class KeyStore:
         so rollback is possible.
         """
         if self._instance_key_path.exists():
-            archive_path = self._instance_key_path.with_suffix(
-                f".rotated.{int(_monotonic_ns())}"
-            )
+            archive_path = self._instance_key_path.with_suffix(f".rotated.{int(_monotonic_ns())}")
             self._instance_key_path.rename(archive_path)
         keypair = generate_keypair()
         self._persist_instance_key(keypair)
@@ -118,9 +111,7 @@ class KeyStore:
         if len(raw_seed) != 32:
             raise KeyStoreError("agent private seed must be exactly 32 bytes")
         if self._kek is None:
-            raise KeyStoreError(
-                f"no KEK configured; set {_ENV_KEY_ENCRYPTION_KEY} or pass one in"
-            )
+            raise KeyStoreError(f"no KEK configured; set {_ENV_KEY_ENCRYPTION_KEY} or pass one in")
         nonce = secrets.token_bytes(_NONCE_SIZE)
         cipher = ChaCha20Poly1305(self._kek)
         ct = cipher.encrypt(nonce, raw_seed, associated_data=None)
@@ -131,9 +122,7 @@ class KeyStore:
         if len(wrapped) < _NONCE_SIZE + 16:  # nonce + minimum GCM tag
             raise KeyStoreError("wrapped agent seed is truncated")
         if self._kek is None:
-            raise KeyStoreError(
-                f"no KEK configured; set {_ENV_KEY_ENCRYPTION_KEY} or pass one in"
-            )
+            raise KeyStoreError(f"no KEK configured; set {_ENV_KEY_ENCRYPTION_KEY} or pass one in")
         nonce, ct = wrapped[:_NONCE_SIZE], wrapped[_NONCE_SIZE:]
         cipher = ChaCha20Poly1305(self._kek)
         try:
@@ -168,13 +157,9 @@ def _load_kek_from_env() -> bytes | None:
     try:
         kek = bytes.fromhex(raw)
     except ValueError as exc:
-        raise KeyStoreError(
-            f"{_ENV_KEY_ENCRYPTION_KEY} must be a 64-char hex string (32 bytes)"
-        ) from exc
+        raise KeyStoreError(f"{_ENV_KEY_ENCRYPTION_KEY} must be a 64-char hex string (32 bytes)") from exc
     if len(kek) != 32:
-        raise KeyStoreError(
-            f"{_ENV_KEY_ENCRYPTION_KEY} must decode to exactly 32 bytes (got {len(kek)})"
-        )
+        raise KeyStoreError(f"{_ENV_KEY_ENCRYPTION_KEY} must decode to exactly 32 bytes (got {len(kek)})")
     return kek
 
 

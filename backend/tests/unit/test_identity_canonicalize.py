@@ -58,7 +58,7 @@ class TestStringEscaping:
         assert canonicalize("\x01") == b'"\\u0001"'
 
     def test_unicode_passthrough(self) -> None:
-        assert canonicalize("héllo") == "\"héllo\"".encode()
+        assert canonicalize("héllo") == '"héllo"'.encode()
 
 
 class TestArrayAndObject:

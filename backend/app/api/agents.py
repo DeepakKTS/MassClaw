@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+import redis.asyncio as aioredis
+from fastapi import APIRouter, Body, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
+from app.core.redis import get_redis
 from app.dependencies import get_agent_service
 from app.models.base import AgentStatus
 from app.schemas.agent import (
@@ -17,6 +21,7 @@ from app.schemas.agent import (
 )
 from app.schemas.common import PaginatedResponse, PaginationParams, SortParams
 from app.services.agent_service import AgentService
+from app.services.identity_service import IdentityService
 
 router = APIRouter()
 
@@ -122,3 +127,45 @@ async def check_agent_health(
 ) -> HealthCheckResponse:
     """Perform an on-demand health check on an agent."""
     return await service.health_check(agent_id)
+
+
+# --------------------------------------------------------------------- AgentFacts
+
+
+@router.get(
+    "/{agent_id}/agent-facts.json",
+    response_model=None,
+    tags=["Identity"],
+    summary="Signed AgentFacts document for this agent.",
+)
+async def get_agent_facts_document(
+    agent_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> dict[str, Any]:
+    """Return the NANDA-style AgentFacts document describing the agent.
+
+    The document is signed by a keypair unique to the agent (generated on
+    first access and persisted encrypted in the agent's metadata). A stock
+    OpenClaw agent can call ``GET /api/v1/agents/{id}/agent-facts.json`` to
+    learn the agent's capabilities, endpoint, and declared limits.
+    """
+    service = IdentityService(session=session, redis=redis)
+    facts = await service.get_agent_facts(agent_id)
+    return facts.to_document()
+
+
+@router.post(
+    "/verify-facts",
+    tags=["Identity"],
+    summary="Verify a posted AgentFacts document.",
+)
+async def verify_posted_agent_facts(
+    document: dict[str, Any] = Body(..., description="Full AgentFacts JSON document to verify."),
+) -> dict[str, Any]:
+    """Verify the signature of an AgentFacts document without trusting the caller.
+
+    Useful for front-end 'verify signature' buttons and for peer nodes handed a
+    document by an unknown third party. No database state is read or written.
+    """
+    return IdentityService.verify_document(document)

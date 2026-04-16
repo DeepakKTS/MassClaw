@@ -110,9 +110,7 @@ def encode_multibase(raw: bytes) -> str:
 def decode_multibase(encoded: str) -> bytes:
     """Decode a multibase-encoded string. Only base58btc is supported."""
     if not encoded or encoded[0] != _MULTIBASE_BTC:
-        raise SignatureError(
-            f"unsupported multibase prefix: expected '{_MULTIBASE_BTC}' (base58btc)"
-        )
+        raise SignatureError(f"unsupported multibase prefix: expected '{_MULTIBASE_BTC}' (base58btc)")
     return b58decode(encoded[1:])
 
 

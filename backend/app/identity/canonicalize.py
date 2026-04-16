@@ -81,9 +81,7 @@ def _emit(value: Any, out: list[str]) -> None:
         items = sorted(value.items(), key=lambda kv: kv[0])
         for i, (k, v) in enumerate(items):
             if not isinstance(k, str):
-                raise CanonicalizationError(
-                    f"dict keys must be strings for canonicalisation, got {type(k).__name__}"
-                )
+                raise CanonicalizationError(f"dict keys must be strings for canonicalisation, got {type(k).__name__}")
             if i:
                 out.append(",")
             out.append(_escape_string(k))

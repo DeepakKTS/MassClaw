@@ -316,9 +316,7 @@ class AgentFactsBuilder:
         """
         issuer_pub = public_key_from_did(self._issuer_did)
         if issuer_pub != issuer_keypair.public_bytes:
-            raise ValueError(
-                "issuer_keypair does not match the public key embedded in issuer DID"
-            )
+            raise ValueError("issuer_keypair does not match the public key embedded in issuer DID")
         unsigned = self._build_unsigned()
         signable = unsigned.signable_bytes()
         signature = sign_bytes(signable, issuer_keypair.private_seed)

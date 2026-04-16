@@ -116,9 +116,7 @@ def _assert_signature(doc: AgentFacts) -> None:
 
     declared_pub = decode_multibase(doc.credential_subject.public_key_multibase)
     if doc.issuer == doc.credential_subject.id and declared_pub != issuer_pub:
-        raise ResolutionError(
-            "public_key_multibase disagrees with the DID it claims to authenticate"
-        )
+        raise ResolutionError("public_key_multibase disagrees with the DID it claims to authenticate")
     # Dummy reference to silence unused-import linters — keeps verify_bytes
     # importable for callers that want to skip the AgentFacts wrapper.
     _ = verify_bytes  # noqa: F841

@@ -124,6 +124,20 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
 
+    # Identity / AgentFacts — Phase 1 NandaHack
+    identity_instance_key_path: str = "/var/lib/massclaw/instance.key"
+    identity_key_encryption_key: str = ""  # hex-encoded 32-byte KEK; required for at-rest agent key wrapping
+    identity_public_base_url: str = "http://localhost:8000"  # base URL exposed to the NANDA Index and stock agents
+    identity_trust_zone: str = "self-issued"
+    identity_instance_name: str = "MassClaw"
+    identity_instance_description: str = (
+        "MassClaw — NANDA-native federated agent operating system. "
+        "Provides identity, shared memory, orchestration, trust, policy, and audit for the Internet of AI Agents."
+    )
+    identity_facts_cache_ttl_seconds: int = 60
+    identity_facts_validity_days: int = 30
+    identity_nanda_index_handle: str | None = None  # set once we register with the NANDA Index on Day 3
+
     def validate_production_settings(self) -> None:
         """Validate settings for production safety. Called during app startup."""
         _INSECURE_JWT_DEFAULT = "change-me-in-production-use-a-secure-random-string"

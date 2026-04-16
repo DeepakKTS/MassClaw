@@ -124,6 +124,13 @@ def create_app() -> FastAPI:
 
     app.include_router(system_router, prefix="/system", tags=["System"])
 
+    # Mount .well-known routes at the HTTP root (no prefix). These are
+    # discoverable by convention — e.g. /.well-known/agent-facts.json is the
+    # NANDA-native discovery surface for this MassClaw node.
+    from app.api.well_known import router as well_known_router
+
+    app.include_router(well_known_router)
+
     @app.get("/ready", tags=["System"])
     async def readiness_check() -> dict[str, Any]:
         """Readiness probe — confirms DB, Redis, and embedding model are ready."""
