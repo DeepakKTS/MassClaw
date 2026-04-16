@@ -6,11 +6,13 @@ from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    ARRAY,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
+    String,
     Text,
     text,
 )
@@ -18,7 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import pg_enum
-from app.models.base import Base, MemoryType
+from app.models.base import Base, MemoryType, RecordState
 
 if TYPE_CHECKING:
     from app.models.workflow import Workflow
@@ -61,6 +63,47 @@ class MemoryRecord(Base):
         ForeignKey("memory_records.memory_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # ---------- CRDT / provenance fields (added in v1.1.0) ----------
+    # Author DID — the agent/instance that produced this record.
+    # Nullable so rows written before the migration (legacy unsigned records)
+    # remain readable. New writes should always supply this.
+    author_did: Mapped[str | None] = mapped_column(
+        String(512),
+        nullable=True,
+        index=True,
+    )
+    # Provenance chain: content hashes of the records this one builds on.
+    # Empty list for a fresh fact; multi-entry when a record merges two
+    # or more predecessors. Stored as a TEXT[] so ANY() queries work for
+    # "find all records that cite hash X as a parent".
+    parent_hashes: Mapped[list[str]] = mapped_column(
+        ARRAY(String(128)),
+        nullable=False,
+        server_default=text("ARRAY[]::varchar[]"),
+    )
+    # Ed25519 signature over the canonical bytes of the signable body,
+    # multibase-encoded (``z`` + base58btc). Nullable for legacy records.
+    signature: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+    )
+    # Content hash — the record's address in the CRDT store. Uniquely
+    # identifies the (immutable) record; used for content-addressed fetch
+    # across nodes. Nullable for legacy records; unique when present.
+    content_hash: Mapped[str | None] = mapped_column(
+        "hash",
+        String(128),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    # Lifecycle state — drives GC and read filtering.
+    record_state: Mapped[RecordState] = mapped_column(
+        pg_enum(RecordState),
+        nullable=False,
+        server_default=text("'active'"),
+        index=True,
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -84,7 +127,31 @@ class MemoryRecord(Base):
             postgresql_with={"lists": 100},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        # GIN index on parent_hashes so "find children of hash X" is fast:
+        # SELECT ... WHERE :h = ANY(parent_hashes)  →  index scan.
+        Index(
+            "ix_memory_records_parent_hashes_gin",
+            "parent_hashes",
+            postgresql_using="gin",
+        ),
+        # Composite index for read queries: active records per workflow
+        # scanned newest-first.
+        Index(
+            "ix_memory_records_workflow_state_created",
+            "workflow_id",
+            "record_state",
+            "created_at",
+        ),
     )
 
+    @property
+    def is_signed(self) -> bool:
+        """Return True when this record has both a content hash and a signature."""
+        return self.content_hash is not None and self.signature is not None
+
     def __repr__(self) -> str:
-        return f"<MemoryRecord(type={self.memory_type}, confidence={self.confidence:.2f}, v={self.version})>"
+        return (
+            f"<MemoryRecord(type={self.memory_type}, state={self.record_state}, "
+            f"confidence={self.confidence:.2f}, v={self.version}, "
+            f"hash={self.content_hash[:8] + '...' if self.content_hash else 'unsigned'})>"
+        )

@@ -20,6 +20,7 @@ __all__ = [
     "ActorType",
     "PolicyAction",
     "PolicyRuleType",
+    "RecordState",
 ]
 
 
@@ -165,3 +166,21 @@ class PolicyRuleType(str, enum.Enum):
     ACCESS = "access"
     RESOURCE = "resource"
     WORKFLOW = "workflow"
+
+
+class RecordState(str, enum.Enum):
+    """Lifecycle state of a signed memory record in the CRDT shared store.
+
+    - ``active``: current, served on normal reads.
+    - ``superseded``: a newer higher-trust record cites this as a parent; still
+      retrievable by hash for audit but excluded from default reads.
+    - ``historical``: archived per policy (e.g. 90 days with no reads); served
+      only on explicit hash lookups.
+    - ``tombstoned``: a signed tombstone exists and has fully propagated; may
+      be garbage-collected.
+    """
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    HISTORICAL = "historical"
+    TOMBSTONED = "tombstoned"

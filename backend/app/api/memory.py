@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
 from app.dependencies import get_memory_service
 from app.models.base import MemoryType
+from app.models.memory import MemoryRecord
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.memory import (
     MemoryQueryRequest,
@@ -74,3 +78,62 @@ async def delete_memory(
 ) -> None:
     """Soft-delete a memory record (sets confidence to 0, excluded from searches)."""
     await service.delete_memory(memory_id)
+
+
+@router.get(
+    "/by-hash/{content_hash}",
+    response_model=MemoryResponse,
+    summary="Fetch a memory record by its content hash.",
+)
+async def get_memory_by_hash(
+    content_hash: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> MemoryResponse:
+    """Content-addressed retrieval of a signed memory record.
+
+    This is how peer MassClaw nodes fetch records by hash during CRDT sync,
+    and how external agents verify a record referenced by its hash alone.
+    The endpoint returns 404 for both "unknown hash" and "the hash exists
+    but the record has been tombstoned" — callers must not distinguish
+    between the two (tombstoned records are eligible for garbage collection
+    and must not be served).
+    """
+    if not content_hash or len(content_hash) > 128:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_hash",
+                "message": "content hash must be 1..128 characters",
+                "next_steps": [
+                    "Pass the multibase-encoded hash of the record's signable body.",
+                ],
+            },
+        )
+    result = await session.execute(select(MemoryRecord).where(MemoryRecord.content_hash == content_hash))
+    record = result.scalar_one_or_none()
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "memory_not_found",
+                "message": f"no memory record with hash {content_hash!r}",
+                "next_steps": [
+                    "Confirm the hash is multibase-encoded (starts with 'z').",
+                    "The record may have been tombstoned — tombstoned records are not served.",
+                ],
+            },
+        )
+    from app.models.base import RecordState
+
+    if record.record_state == RecordState.TOMBSTONED:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "memory_not_found",
+                "message": f"record {content_hash!r} has been tombstoned",
+                "next_steps": [
+                    "Tombstoned records are not served; they exist only to propagate deletion.",
+                ],
+            },
+        )
+    return MemoryResponse.model_validate(record)
