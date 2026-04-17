@@ -52,6 +52,42 @@ class ToolRegistry:
         cap_set = set(capabilities)
         return [t for t in self._tools.values() if t.required_capabilities & cap_set]
 
+    def get_tools_for_agent(self, agent) -> list[ToolProvider]:
+        """Return the toolbelt the agent's LLM is allowed to see at runtime.
+
+        Two sources of truth, in order of precedence:
+
+        1. ``agent.supported_tools`` — an explicit allowlist (dict or list)
+           maintained by the operator. When set, this is the authoritative
+           toolbelt: only tools named in it (and truthy if dict-valued)
+           are exposed. This is how an operator restricts a risk agent to
+           read-only access without reshaping its capability list.
+        2. Fallback to capability-based unlock via
+           :meth:`get_tools_for_capabilities` using ``agent.capabilities``.
+           Legacy path, kept because early seed data left ``supported_tools``
+           empty and migrating every existing row is out of scope.
+
+        This split resolves a long-standing mismatch: ``supported_tools`` was
+        stored and surfaced through AgentFacts but the scheduler never read
+        it — so "agent X has code_execute" would be true in AgentFacts and
+        in the DB, but false at dispatch time. Surfaced by the OpenClaw
+        harness s5 run.
+        """
+        supported = getattr(agent, "supported_tools", None)
+        if supported:
+            # Dict form: {"code_execute": True, ...}. Any truthy value counts.
+            # List form: ["code_execute", ...]. Presence counts.
+            if isinstance(supported, dict):
+                allowed_names = {name for name, flag in supported.items() if flag}
+            elif isinstance(supported, (list, tuple, set)):
+                allowed_names = set(supported)
+            else:
+                allowed_names = set()
+            if allowed_names:
+                return [t for name, t in self._tools.items() if name in allowed_names]
+        caps = getattr(agent, "capabilities", None) or []
+        return self.get_tools_for_capabilities(list(caps))
+
 
 def get_tool_registry() -> ToolRegistry:
     global _registry

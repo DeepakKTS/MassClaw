@@ -48,7 +48,7 @@ SEED_AGENTS = [
     {
         "name": "Research Agent",
         "description": "Research specialist. Gathers background context, benchmarks, industry data, and relevant patterns for the specified domain.",
-        "capabilities": ["research", "data-retrieval", "literature-review"],
+        "capabilities": ["research", "data-retrieval", "literature-review", "code-execution"],
         "endpoint": "internal://research-agent",
         "cost_profile": {"avg_cost_per_call": 0.008, "model": "claude-sonnet"},
         "latency_profile": {"p50_ms": 2000, "p95_ms": 5000, "p99_ms": 8000},
@@ -81,7 +81,7 @@ SEED_AGENTS = [
     {
         "name": "Optimization Agent",
         "description": "Resource allocation optimizer. Proposes scheduling improvements, capacity adjustments, and resource reallocation strategies.",
-        "capabilities": ["optimization", "scheduling", "resource-allocation"],
+        "capabilities": ["optimization", "scheduling", "resource-allocation", "code-execution", "data-analytics"],
         "endpoint": "internal://optimization-agent",
         "cost_profile": {"avg_cost_per_call": 0.010, "model": "claude-sonnet"},
         "latency_profile": {"p50_ms": 3000, "p95_ms": 7000, "p99_ms": 10000},
@@ -92,7 +92,7 @@ SEED_AGENTS = [
     {
         "name": "Cost Agent",
         "description": "Financial impact analyst. Estimates costs of proposed changes, projects ROI, and evaluates budget implications of operational improvements.",
-        "capabilities": ["cost-analysis", "budget-estimation", "roi-projection"],
+        "capabilities": ["cost-analysis", "budget-estimation", "roi-projection", "code-execution", "data-analytics"],
         "endpoint": "internal://cost-agent",
         "cost_profile": {"avg_cost_per_call": 0.006, "model": "claude-sonnet"},
         "latency_profile": {"p50_ms": 1500, "p95_ms": 3000, "p99_ms": 5000},

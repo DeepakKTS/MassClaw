@@ -999,6 +999,7 @@ class WorkflowScheduler:
 
         # ---------- abort: save a checkpoint so the workflow can be resumed post-mortem
         if reflection.action == "abort":
+            checkpoint_hash: str | None = None
             try:
                 keypair = get_instance_key_store().instance_keypair()
                 store = CheckpointStore(session=self.session, keypair=keypair)
@@ -1016,6 +1017,7 @@ class WorkflowScheduler:
                     },
                 )
                 saved = await store.save(checkpoint)
+                checkpoint_hash = saved.content_hash
                 task_rec.output["abort_checkpoint"] = {
                     "hash": saved.content_hash,
                     "reason": saved.reason,
@@ -1033,6 +1035,38 @@ class WorkflowScheduler:
                     node_id=node.node_id,
                     error=str(exc),
                 )
+
+            # Transition the workflow itself to a terminal FAILED state so
+            # /status polling doesn't loop forever on "pending". Previously
+            # the abort only flagged the task; the workflow sat in RUNNING
+            # indefinitely and any stock agent polling /status would give up
+            # by timeout with no diagnosis. Surfaced by OpenClaw harness s8.
+            issues_summary = "; ".join((reflection.issues or [])[:3]) or "safety check failed"
+            suggestions_summary = "; ".join((reflection.suggestions or [])[:2])
+            workflow.status = WorkflowStatus.FAILED
+            workflow.completed_at = datetime.now(UTC)
+            workflow.result = {
+                "status": "aborted_by_safety_reflection",
+                "aborted_at_task": node.node_id,
+                "aborted_at_capability": node.capability,
+                "issues": issues_summary,
+                "suggestions": suggestions_summary,
+                "checkpoint_hash": checkpoint_hash,
+                "next_steps": (
+                    "The safety reflection engine refused to execute this workflow. "
+                    "If you believe the block is a false positive, rephrase the request "
+                    "with explicit authorization context or submit it via the HITL "
+                    "approval flow using the checkpoint_hash above."
+                ),
+            }
+            _flag_modified(workflow, "result")
+            await self._publish_progress(
+                workflow,
+                dag,
+                "workflow_aborted_by_safety",
+                node=node,
+                extra={"checkpoint_hash": checkpoint_hash, "issues": issues_summary},
+            )
             await self.session.flush()
             return None
 
@@ -1095,8 +1129,13 @@ class WorkflowScheduler:
         from app.tools.registry import get_tool_registry
 
         registry = get_tool_registry()
-        agent_caps = agent.capabilities if isinstance(agent.capabilities, list) else []
-        available_tools = registry.get_tools_for_capabilities(agent_caps)
+        # Ask the registry for the agent's toolbelt: prefer `agent.supported_tools`
+        # (authoritative allowlist maintained by the operator) with capability-based
+        # unlock as fallback. Pre-2026-04-17 we only used capabilities here, which
+        # caused every code_execute request to return fabricated output because no
+        # seeded agent had the "code-execution" capability. See
+        # ToolRegistry.get_tools_for_agent docstring.
+        available_tools = registry.get_tools_for_agent(agent)
         tool_schemas = [t.to_schema() for t in available_tools] if available_tools else None
 
         settings = get_settings()

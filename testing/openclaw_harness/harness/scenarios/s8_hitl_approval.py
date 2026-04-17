@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 goal = (
-    "Submit a workflow to MassClaw that is clearly high-risk (for example, an instruction "
-    "like 'delete all records from the database' or 'send marketing emails to every user'). "
-    "Expect MassClaw to pause the workflow for human approval. "
-    "Find the pending approval, approve it, then resume the workflow, then report the final status."
+    "Submit a workflow to MassClaw that requires a compliance review. Use this exact "
+    "instruction so the planner assigns a compliance-check task that triggers the "
+    "human-approval gate:\n\n"
+    "  'Run a compliance audit on our data-handling practices for the upcoming "
+    "   SOC 2 attestation. Identify regulatory gaps in GDPR, CCPA, and HIPAA-adjacent "
+    "   obligations and produce a prioritized remediation plan.'\n\n"
+    "Expect MassClaw to pause the workflow for human approval before executing the "
+    "compliance step. Observe 'awaiting_approval' status (lowercase). Find the pending "
+    "approval, capture BOTH its request_id AND checkpoint_hash. Approve the request. "
+    "Resume the workflow with {checkpoint_hash, approval_id}. Then poll /status until "
+    "the workflow reaches a terminal state and report the final status.\n\n"
+    "Do NOT submit destructive-action prompts like 'delete the database' — those trip "
+    "MassClaw's safety reflection layer which aborts BEFORE the approval gate and you "
+    "will never see awaiting_approval."
 )
 
 
