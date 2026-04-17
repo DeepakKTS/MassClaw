@@ -98,34 +98,28 @@ class StrategyRouter:
         """Classic DAG decomposition + parallel execution. Delegates to existing orchestration."""
         from sqlalchemy import select
 
-        # Workflow-status transitions persist through a short-lived
-        # satellite session: decouples /status visibility from the main
-        # scheduler's long-running transaction. Writing to this satellite
-        # commits immediately without mutating the main session's
-        # transaction boundary, which was the root cause of the silent
-        # scheduler hangs between task batches (commit inside the main
-        # session left the scheduler's outer loop in a state where
-        # subsequent Agent/Task lookups through the same session stalled).
-        from app.core.database import db_session_context as _sat
         from app.models.agent import Agent
         from app.models.base import WorkflowStatus
         from app.orchestration.decomposer import TaskDecomposer
         from app.orchestration.scheduler import WorkflowScheduler
         from app.orchestration.selector import AgentSelector
 
-        async def _sat_update_workflow_status(new_status: WorkflowStatus, **extra) -> None:
-            from sqlalchemy import update as _sat_update
-
-            async with _sat() as sat_session:
-                stmt = (
-                    _sat_update(type(workflow))
-                    .where(type(workflow).workflow_id == workflow.workflow_id)
-                    .values(status=new_status, **extra)
-                )
-                await sat_session.execute(stmt)
-
+        # NB: status transitions (DECOMPOSING/RUNNING/etc.) are flushed to
+        # the session but NOT committed mid-workflow. Mid-flow commits in
+        # this long-lived session caused two separate failure modes during
+        # the 2026-04-17 harness sprint: (a) session.commit() left the
+        # scheduler loop in a state where subsequent Agent/Task lookups
+        # stalled silently between task batches, and (b) opening a
+        # satellite session to write the same workflow row deadlocks
+        # against the main session's pending UPDATE. Until the scheduler
+        # is refactored into explicit per-batch sessions (tracked
+        # separately), /status visibility for intermediate states is
+        # accepted as a known limitation: readers see "pending" for the
+        # decompose+execute window, then the terminal state after
+        # completion. The workflow DOES make progress — task rows are
+        # inserted + committed by the scheduler's per-task flushes.
         workflow.status = WorkflowStatus.DECOMPOSING
-        await _sat_update_workflow_status(WorkflowStatus.DECOMPOSING)
+        await self.session.flush()
 
         # Get available capabilities
         result = await self.session.execute(select(Agent.capabilities).where(Agent.status.in_(["active", "degraded"])))
@@ -146,16 +140,6 @@ class StrategyRouter:
         workflow.domain = detected_domain
         workflow.dag_snapshot = dag.to_dict()
         await self.session.flush()
-        # Publish DAG snapshot through satellite so polling agents see
-        # total_tasks > 0 before task rows are inserted.
-        async with _sat() as sat_session:
-            from sqlalchemy import update as _sat_update
-
-            await sat_session.execute(
-                _sat_update(type(workflow))
-                .where(type(workflow).workflow_id == workflow.workflow_id)
-                .values(domain=detected_domain, dag_snapshot=workflow.dag_snapshot)
-            )
 
         # Assign agents — use remaining budget, not total
         selector = AgentSelector(self.session)
