@@ -2,9 +2,9 @@
 
 **The master document. Second brain for the whole project.** Every subsystem, every file worth knowing, every endpoint, every test you should run.
 
-Pair this with the live status board at `file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html`.
+Pair this with the live status board at `file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html` **and** the live OpenClaw hardening dashboard at `http://localhost:3000/federation-lab` (when the lab is running locally).
 
-Last rebuilt: 2026-04-17.
+Last rebuilt: 2026-04-17 (late-night OpenClaw hardening sprint — 24 commits, 8-of-9 scenarios green).
 
 ---
 
@@ -938,6 +938,7 @@ open file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html
 
 | Commit / session | What landed |
 |---|---|
+| **2026-04-17 late-night OpenClaw sprint** (~24 commits, all CI green) | **Complete OpenClaw hardening lab** at `testing/openclaw_harness/` — FastAPI state+telemetry server on :19000 with SQLite log, 9 scenarios, grader, `openclaw.md` judge handoff artifact, simulated-agent prompt. Native-process 3-node federation (`scripts/dev_federation_up.sh`, no Docker required) on 18001/18002/18003 using Homebrew Postgres 17 + Redis. Next.js dashboard at `frontend/src/app/federation-lab/` with three live terminals, scenario grid, Merkle convergence strip, agent transcript, fix-commit ticker. **Federation converges end-to-end** (record written on node-a visible via `/memory/by-hash` on node-b + node-c within ~10s, matching Merkle roots). **8-of-9 scenarios green on dashboard**: s1 discover, s2 verify, s3 workflow, s4 memory query, s5 tool use (Firecrawl), s6 fact-resolve, s7 federation sync, s9 wallet. s8 HITL is the remaining red — deferred. **Firecrawl integrated as primary web_search backend** (user-supplied key; Brave kept as fallback). **Scheduler hardened** via replan cap (3/workflow), semantic cache poison-guard, reflection-abort terminal transition, loud loop diagnostics, tool-bias system prompt injection, ToolRegistry.get_tools_for_agent honoring agent.supported_tools as authoritative allowlist. **CI discipline locked in** with `make ci-local` target + feedback memory. Commits: `1edc7dc` → `d921aba`. |
 | **Day 22 late-night** | Scheduler tool-loop + duplicate-Task-row fix: `_run_tool_loop` extracted, exhaustion forces `tools=None` summary, `_upsert_task_row` re-uses rows by `node.task_id`, `reserve_budget` gets an idempotency_key, low-confidence review fires once per attempt (flag cleared on retry). New `test_scheduler_tool_loop.py` (6 tests). **Live probe**: the "top 10 agentic AI tools" prompt now completes with 6 task rows for a 6-node DAG, budget 7.27/25 cr. |
 | Day 22 evening | Universal neon-orange theme refresh: `#E08A3E → #FF7A1A` in globals, components, and dashboards. Wallet balance reconciled against `Workflow.budget_used` so direct-response cost shows in UI. |
 | Day 22 afternoon | `memory_records.workflow_id` made nullable (migration `b4d1a2c3e7f9`) so the semantic cache can write cross-workflow entries without crashing direct-response workflows. |
@@ -949,10 +950,12 @@ open file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html
 
 | Item | Status | Unblock | Effort |
 |---|---|---|---|
-| **Day 19 — stock-agent black-box harness** | in_progress | Write `scripts/stock_agent_harness.py` + 5 scenarios (search / HITL / policy / cross-node / partition) | 3–4 h |
-| **Day 20 — five demo recordings + friend dry-run** | pending | Run the stack + screen-record each scenario | 2 h |
+| **s8 HITL approval scenario** | red on dashboard | Refactor `_execute_workflow_background` into per-batch short-lived sessions so the approval gate fires visibly and `/approvals/pending` surfaces in time. Attempts with mid-loop commits + satellite sessions all introduced side-effects; TDD refactor needed. | 2–3 h |
+| **code_execute end-to-end verification** | blocked on Docker | Install Docker / OrbStack on dev machine. Tool code already correct; just needs a sandbox runtime. | 10 m + install |
+| Scheduler model ID freshness | known drift | `scheduler.py` hardcodes `claude-sonnet-4-20250514`; update to `claude-sonnet-4-6`. | 5 m |
+| **Day 20 — five demo recordings + friend dry-run** | pending | Run the stack + screen-record each scenario from the `/federation-lab` dashboard | 2 h |
 | **Day 21 — Phase-1 submission** | pending | Form fill + final checklist sign-off | 30 m |
-| Live federation partition/heal re-verify | pending | Docker up + `./scripts/demo_federation_test.sh` | 20 m |
+| Live federation partition/heal re-verify | pending | `./scripts/dev_federation_up.sh && ./scripts/demo_partition.sh node-c` (port demo_* scripts to native-mode or use docker when available) | 20 m |
 | Long-soak / multi-region latency measurements | deferred | Post-Phase-1 | — |
 | Learning-from-reflection pipeline | deferred | Phase-2 | — |
 | OPA/Rego policy backend | deferred | Phase-2 | — |
@@ -960,25 +963,38 @@ open file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html
 ### 22.3 · How to resume next session
 
 ```bash
-# 1. Read this file + the dashboard
-open file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html
-# look at §22.2 above for the top pending item.
+# 1. Read the recap memory FIRST (under ~60 sec)
+#    ~/.claude/projects/-Users-deepakzedler-Documents-MassClaw/memory/
+#      project_nandahack_session_recap.md
+#      project_nandahack_progress.md
+#      reference_firecrawl_api.md   <-- web_search key lives here
+#      feedback_ci_local_before_push.md
+#      feedback_no_extra_spend.md
 
-# 2. Confirm nothing regressed
-cd ~/Documents/MassClaw/backend
-python -m pytest tests/unit tests/integration \
-  --ignore=tests/unit/test_scheduler_cache.py -q
-# expect: 622 passed
+# 2. Confirm nothing regressed + check lab state
+cd ~/Documents/MassClaw
+make ci-local                         # must be green — 632+ tests, ruff clean
+for p in 18001 18002 18003 19000 3000; do
+  curl -s -o /dev/null -w "  :$p %{http_code}\n" --max-time 2 \
+    "http://localhost:$p/health" 2>/dev/null || echo "  :$p down"
+done
 
-# 3. Boot the stack
-alembic upgrade head
-AUTH_REQUIRED=false IDENTITY_KEY_ENCRYPTION_KEY=$(printf '33%.0s' {1..32}) \
-  uvicorn app.main:app --port 8000 &
-(cd ../frontend && npm run dev &)
+# 3. If anything is down, bring it up
+./scripts/dev_federation_up.sh        # 3-node native federation
+(cd testing/openclaw_harness && make harness-up)
+(cd frontend && BACKEND_URL=http://localhost:18001 npm run dev &)
 
-# 4. Start Day-19 work — write scripts/stock_agent_harness.py
-#    · five scenarios from docs/MASSCLAW.md §18
-#    · no MassClaw-specific prompt tuning allowed
-#    · each scenario asserts green vs. red verdict
+# 4. Open the live OpenClaw dashboard
+open http://localhost:3000/federation-lab
+
+# 5. TOP PRIORITY: s8 HITL end-to-end
+#    Plan: break scheduler's long-lived transaction into per-batch short-lived
+#    sessions (see §22.2 above for why). TDD approach.
+#    · Write test_scheduler_batch_session.py first — each batch is a
+#      separate unit-of-work session that commits before approval gate
+#    · Refactor _execute_workflow_background to open N sessions (one per batch)
+#    · Harness must show s8 transitioning pending → running → awaiting_approval
+#      within ~60s, approval fetchable from /api/v1/approvals/pending
+#    · Approve + resume via {checkpoint_hash, approval_id} → completed
 ```
 
