@@ -43,7 +43,20 @@ class WalletService:
     async def get_balance(self, workflow_id: uuid.UUID) -> WalletBalanceResponse:
         """Get current wallet balance for a workflow.
 
-        Checks Redis cache first, falls back to computing from events.
+        Two writers update cost state on a workflow:
+          1. The ledger path (reserve/charge/release) — wallet_events rows.
+             ``_compute_balance_from_events`` aggregates these.
+          2. Direct writers (e.g. :meth:`_direct_response` in the strategy
+             router) that set ``Workflow.budget_used`` directly without
+             issuing a WalletEvent.
+
+        The authoritative value is the MAX of the two so neither path can
+        understate the budget — matching what the UI expects when a
+        direct-response workflow completes with a real LLM cost.
+
+        Redis cache still fronts the ledger computation but is bypassed
+        when the workflow row reports a higher value (cache invalidation
+        would otherwise silently lose the direct-path cost).
         """
         workflow = await self._get_workflow(workflow_id)
 
@@ -52,12 +65,17 @@ class WalletService:
         cached = await self.redis.get(cache_key)
 
         if cached is not None:
-            budget_used = float(cached)
+            ledger_used = float(cached)
         else:
-            budget_used = await self._compute_balance_from_events(workflow_id)
-            await self.redis.set(cache_key, str(budget_used), ex=self.BALANCE_CACHE_TTL)
+            ledger_used = await self._compute_balance_from_events(workflow_id)
+            await self.redis.set(cache_key, str(ledger_used), ex=self.BALANCE_CACHE_TTL)
 
-        # Compute reserved amount (reserves that haven't been charged or released)
+        # Reconcile with the workflow row (direct-response + scheduler
+        # both maintain this; it's the single source of truth after
+        # completion).
+        row_used = float(workflow.budget_used or 0)
+        budget_used = max(ledger_used, row_used)
+
         reserved = await self._compute_reserved(workflow_id)
 
         budget_limit = float(workflow.budget_limit)
