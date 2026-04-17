@@ -1536,6 +1536,34 @@ class WorkflowScheduler:
             logger.debug("semantic_cache_error", error=str(e))
             return None
 
+    # Content markers that indicate a failed / degraded task output.
+    # Responses matching these must NEVER land in the semantic cache —
+    # otherwise future runs hit a stale failure via cosine similarity and
+    # appear to succeed in 0.5ms with "tool unavailable" text. Surfaced
+    # by OpenClaw harness s5 where poisoned cache masked the real tool
+    # dispatch fix.
+    _CACHE_POISON_MARKERS = (
+        "not available",
+        "unavailable",
+        "does not have",
+        "cannot execute",
+        "unable to",
+        "could not be completed",
+        "environment issues",
+        "tool not found",
+        "api key is missing",
+        "missing api configuration",
+        "no access to",
+    )
+
+    @classmethod
+    def _is_cacheable(cls, content: str) -> bool:
+        """Reject cache writes for obvious failure/degraded responses."""
+        if not content:
+            return False
+        lowered = content.lower()
+        return not any(marker in lowered for marker in cls._CACHE_POISON_MARKERS)
+
     async def _store_in_cache(self, node: DAGNode, prompt: str, response: LLMResponse) -> None:
         """Store a task result in the semantic cache for future reuse.
 
@@ -1545,6 +1573,14 @@ class WorkflowScheduler:
         try:
             if not response.content or len(response.content) < 50:
                 return  # Don't cache trivial responses
+            if not self._is_cacheable(response.content):
+                logger.info(
+                    "semantic_cache_skipped_poisoned_response",
+                    capability=node.capability,
+                    node_id=node.node_id,
+                    preview=response.content[:100],
+                )
+                return
 
             from app.embeddings.service import get_embedding_service
 
