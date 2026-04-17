@@ -811,7 +811,10 @@ class WorkflowScheduler:
         from app.orchestration.checkpoint import CheckpointStore, WorkflowCheckpoint
         from app.services.identity_service import get_instance_key_store
 
-        reflection_engine = ReflectionEngine()
+        # Feed the engine our Redis client so repeated reflections on
+        # the same (goal, output) pair short-circuit the LLM — important
+        # for retries where the task output hasn't actually changed yet.
+        reflection_engine = ReflectionEngine(redis=self.redis)
         task_outputs = [{"capability": node.capability, "content": response_content[:2000]}]
         reflection = await reflection_engine.reflect(
             goal_description=workflow.prompt,
