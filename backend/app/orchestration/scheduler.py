@@ -4,6 +4,7 @@ import asyncio
 import os
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -608,44 +609,43 @@ class WorkflowScheduler:
                         except Exception as e:
                             logger.warning("review_request_failed", error=str(e))
 
-                    # Adaptive Intelligence: Reflect on task output quality
+                    # Adaptive Intelligence: four-branch reflection on task output.
+                    #
+                    # Dispatches to the existing intelligence modules so the
+                    # logic stays in one place per concern:
+                    #   - retry_task → SelfCorrectionEngine decides + builds
+                    #     an improved prompt; we reset the DAG node and the
+                    #     next scheduler tick re-executes with the feedback.
+                    #   - re_plan    → DynamicReplanner injects an alternative
+                    #     task node into the DAG; the original stays completed
+                    #     so the audit trail shows what was tried.
+                    #   - add_verifier → DynamicReplanner adds a verifier as
+                    #     a re_plan-shaped alternative; enough for Phase 1.
+                    #   - abort      → persist a workflow checkpoint (so Day 13
+                    #     cross-node resume has something to pick up) and let
+                    #     the main loop surface the failure via dag status.
+                    #   - accept     → happy path, no branch action.
                     try:
-                        from app.intelligence.reflection import ReflectionEngine
-
-                        reflection_engine = ReflectionEngine()
-                        task_outputs = [{"capability": node.capability, "content": response.content[:2000]}]
-                        reflection = await reflection_engine.reflect(
-                            goal_description=workflow.prompt,
-                            completed_outputs=task_outputs,
+                        reflection_outcome = await self._reflect_on_task(
+                            workflow=workflow,
+                            dag=dag,
+                            node=node,
+                            task_rec=task_rec,
+                            response_content=response.content,
                         )
+                    except Exception as e:  # reflection must never break the run.
+                        logger.warning(
+                            "reflection_failed",
+                            node_id=node.node_id,
+                            error=str(e),
+                        )
+                        reflection_outcome = None
 
-                        # Store reflection in task metadata
-                        task_rec.output["reflection"] = {
-                            "action": reflection.action,
-                            "confidence": reflection.confidence,
-                            "issues": reflection.issues[:3] if reflection.issues else [],
-                            "suggestions": reflection.suggestions[:3] if reflection.suggestions else [],
-                        }
-
-                        # If reflection suggests retry and we have budget, mark for retry
-                        if reflection.action == "retry_task" and reflection.confidence < 0.5:
-                            retry_count = task_rec.output.get("retry_count", 0)
-                            if retry_count < 2:  # Max 2 retries per task
-                                task_rec.output["retry_count"] = retry_count + 1
-                                task_rec.status = TaskStatus.PENDING
-                                dag.mark_pending(node.node_id)  # Reset DAG node
-                                logger.info(
-                                    "task_retry_triggered",
-                                    node_id=node.node_id,
-                                    confidence=reflection.confidence,
-                                    retry=retry_count + 1,
-                                )
-                                await self.session.flush()
-                                continue  # Skip to next node, this one will re-execute
-
-                        await self.session.flush()
-                    except Exception as e:
-                        logger.warning("reflection_failed", node_id=node.node_id, error=str(e))
+                    if reflection_outcome and reflection_outcome.get("continue_loop"):
+                        # The branch (usually retry_task) reset the DAG node
+                        # and wants the scheduler to skip downstream
+                        # bookkeeping and re-enter the outer loop.
+                        continue
 
                     await self._publish_progress(
                         workflow,
@@ -743,6 +743,179 @@ class WorkflowScheduler:
         shutil.rmtree(workspace, ignore_errors=True)
 
         return final_result
+
+    async def _reflect_on_task(
+        self,
+        *,
+        workflow: Workflow,
+        dag: DAG,
+        node: DAGNode,
+        task_rec: Task,
+        response_content: str,
+    ) -> dict[str, Any] | None:
+        """Four-branch adaptive-intelligence dispatch after a task completes.
+
+        Runs the reflection engine and, based on the returned ``action``,
+        may:
+            - do nothing (``accept``)
+            - delegate to :class:`SelfCorrectionEngine` for a retry decision
+              and reset the DAG node so the scheduler re-executes it
+            - delegate to :class:`DynamicReplanner` to inject an alternative
+              node (``re_plan`` / ``add_verifier``)
+            - persist a workflow checkpoint and let the outer loop surface
+              the failure (``abort``)
+
+        Returns a dict with ``continue_loop=True`` when the caller should
+        ``continue`` its outer loop (i.e. the task was reset for retry);
+        ``None`` otherwise.
+        """
+        from app.intelligence.dynamic_replanner import DynamicReplanner
+        from app.intelligence.reflection import ReflectionEngine
+        from app.intelligence.self_correction import SelfCorrectionEngine
+        from app.orchestration.checkpoint import CheckpointStore, WorkflowCheckpoint
+        from app.services.identity_service import get_instance_key_store
+
+        reflection_engine = ReflectionEngine()
+        task_outputs = [{"capability": node.capability, "content": response_content[:2000]}]
+        reflection = await reflection_engine.reflect(
+            goal_description=workflow.prompt,
+            completed_outputs=task_outputs,
+        )
+
+        if not isinstance(task_rec.output, dict):
+            task_rec.output = {}
+        task_rec.output["reflection"] = {
+            "action": reflection.action,
+            "confidence": reflection.confidence,
+            "issues": reflection.issues[:3] if reflection.issues else [],
+            "suggestions": reflection.suggestions[:3] if reflection.suggestions else [],
+        }
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+
+        _flag_modified(task_rec, "output")
+
+        # ---------- accept: nothing to do
+        if reflection.action == "accept":
+            await self.session.flush()
+            return None
+
+        # ---------- retry_task: delegate to SelfCorrectionEngine
+        if reflection.action == "retry_task":
+            retry_count = int(task_rec.retry_count or 0)
+            corrector = SelfCorrectionEngine()
+            decision = corrector.evaluate(
+                task_output=response_content,
+                reflection_action=reflection.action,
+                reflection_confidence=reflection.confidence,
+                reflection_issues=list(reflection.issues or []),
+                reflection_suggestions=list(reflection.suggestions or []),
+                retry_count=retry_count,
+            )
+            if decision.should_retry:
+                task_rec.retry_count = retry_count + 1
+                task_rec.status = TaskStatus.PENDING
+                task_rec.output["retry_feedback"] = decision.improved_prompt or ""
+                _flag_modified(task_rec, "output")
+                dag.mark_pending(node.node_id)
+                logger.info(
+                    "task_retry_triggered",
+                    node_id=node.node_id,
+                    confidence=reflection.confidence,
+                    retry=task_rec.retry_count,
+                    reason=decision.reason,
+                )
+                await self.session.flush()
+                return {"continue_loop": True, "action": "retry_task"}
+            logger.info(
+                "task_retry_declined",
+                node_id=node.node_id,
+                reason=decision.reason,
+                retry_count=retry_count,
+            )
+            await self.session.flush()
+            return None
+
+        # ---------- re_plan / add_verifier: inject an alternative node
+        if reflection.action in ("re_plan", "add_verifier"):
+            context = "; ".join((reflection.issues or [])[:3]) or reflection.action
+            # Cast add_verifier to re_plan for the replanner which only
+            # reacts to the re_plan string. The intent is the same:
+            # inject an alternative task node.
+            new_nodes = DynamicReplanner.replan(
+                dag,
+                failed_node_id=node.node_id,
+                reflection_action="re_plan",
+                context=context,
+            )
+            if new_nodes:
+                task_rec.output["replan"] = {
+                    "added_node_ids": [n.node_id for n in new_nodes],
+                    "action": reflection.action,
+                    "context": context,
+                }
+                _flag_modified(task_rec, "output")
+                logger.info(
+                    "task_replan_added_alternative",
+                    original=node.node_id,
+                    added=[n.node_id for n in new_nodes],
+                    action=reflection.action,
+                )
+            else:
+                logger.info(
+                    "task_replan_skipped",
+                    node_id=node.node_id,
+                    action=reflection.action,
+                )
+            await self.session.flush()
+            return None
+
+        # ---------- abort: save a checkpoint so the workflow can be resumed post-mortem
+        if reflection.action == "abort":
+            try:
+                keypair = get_instance_key_store().instance_keypair()
+                store = CheckpointStore(session=self.session, keypair=keypair)
+                checkpoint = WorkflowCheckpoint.from_dag(
+                    workflow_id=workflow.workflow_id,
+                    dag=dag,
+                    reason=f"reflection_abort: {', '.join((reflection.issues or [])[:2])}",
+                    current_task_id=node.node_id,
+                    variables={},
+                    reflection={
+                        "action": reflection.action,
+                        "confidence": reflection.confidence,
+                        "issues": list(reflection.issues or [])[:5],
+                        "suggestions": list(reflection.suggestions or [])[:5],
+                    },
+                )
+                saved = await store.save(checkpoint)
+                task_rec.output["abort_checkpoint"] = {
+                    "hash": saved.content_hash,
+                    "reason": saved.reason,
+                }
+                _flag_modified(task_rec, "output")
+                logger.warning(
+                    "task_reflection_abort",
+                    workflow_id=str(workflow.workflow_id),
+                    node_id=node.node_id,
+                    checkpoint_hash=(saved.content_hash or "")[:12],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "task_reflection_abort_checkpoint_failed",
+                    node_id=node.node_id,
+                    error=str(exc),
+                )
+            await self.session.flush()
+            return None
+
+        # Unknown action — log and continue without action.
+        logger.info(
+            "task_reflection_unknown_action",
+            node_id=node.node_id,
+            action=reflection.action,
+        )
+        await self.session.flush()
+        return None
 
     async def _handle_failure(
         self,

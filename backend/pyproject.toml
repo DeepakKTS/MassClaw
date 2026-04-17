@@ -86,6 +86,13 @@ known-first-party = ["app"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# Custom markers:
+#   e2e — end-to-end tests that launch external services (docker, etc.)
+#         and must be run deliberately. Excluded from the default
+#         backend CI job which runs tests/unit + tests/integration only.
+markers = [
+    "e2e: tests that boot the 3-node federation via docker compose (long running; docker required)",
+]
 
 [tool.mypy]
 python_version = "3.12"
