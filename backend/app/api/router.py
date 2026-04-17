@@ -52,6 +52,13 @@ from app.api.identity import router as identity_router
 
 api_router.include_router(identity_router, prefix="/identity", tags=["Identity"])
 
+# Demo endpoints — gated at the handler level via _require_demo_mode(),
+# which 404s when MASSCLAW_DEMO_MODE is false. Always mount the router so
+# the switch is purely a runtime check, not a deploy-time surgery.
+from app.api.demo import router as demo_router
+
+api_router.include_router(demo_router, prefix="/demo", tags=["Demo"])
+
 
 @api_router.get("/", tags=["System"])
 async def api_root() -> dict[str, str]:

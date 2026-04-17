@@ -1,4 +1,4 @@
-.PHONY: dev test migrate seed lint format docker-up docker-down backend frontend celery help
+.PHONY: dev test migrate seed lint format docker-up docker-down backend frontend celery help federation-up federation-down federation-test federation-summary
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -69,6 +69,19 @@ format: ## Format code
 
 typecheck: ## Run type checker
 	cd backend && mypy app/
+
+# Federation demo (3-node CRDT convergence scenario — the GATING Phase 1 proof)
+federation-up: ## Bring up the 3-node federation + seed shared workflow
+	./scripts/demo_up.sh
+
+federation-down: ## Stop + remove the federation containers + network
+	./scripts/demo_down.sh
+
+federation-test: ## Run the full partition/heal/converge scenario and assert convergence
+	./scripts/demo_federation_test.sh
+
+federation-summary: ## Show each node's Merkle root + record count
+	./scripts/demo_summary.sh
 
 # Cleanup
 clean: ## Remove build artifacts and caches

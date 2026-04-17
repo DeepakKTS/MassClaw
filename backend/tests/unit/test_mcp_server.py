@@ -11,6 +11,7 @@ from app.protocols.mcp_server import MassClawMCPServer
 # Instantiation
 # ---------------------------------------------------------------------------
 
+
 def test_create_server():
     """MassClawMCPServer can be instantiated without errors."""
     server = MassClawMCPServer()
@@ -50,12 +51,8 @@ def test_tool_schemas():
 
         schema = tool["inputSchema"]
         assert isinstance(schema, dict), f"Tool '{tool['name']}' inputSchema must be a dict"
-        assert schema.get("type") == "object", (
-            f"Tool '{tool['name']}' inputSchema type should be 'object'"
-        )
-        assert "properties" in schema, (
-            f"Tool '{tool['name']}' inputSchema missing 'properties'"
-        )
+        assert schema.get("type") == "object", f"Tool '{tool['name']}' inputSchema type should be 'object'"
+        assert "properties" in schema, f"Tool '{tool['name']}' inputSchema missing 'properties'"
 
 
 def test_tool_schema_required_fields():

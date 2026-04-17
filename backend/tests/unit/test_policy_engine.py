@@ -32,19 +32,23 @@ class TestConditionEvaluator:
     def test_all_combinator(self):
         e = self._engine()
         ctx = {"agent": {"trust_score": 0.1}, "cost": 200}
-        cond = {"all": [
-            {"field": "agent.trust_score", "op": "lt", "value": 0.3},
-            {"field": "cost", "op": "gt", "value": 100},
-        ]}
+        cond = {
+            "all": [
+                {"field": "agent.trust_score", "op": "lt", "value": 0.3},
+                {"field": "cost", "op": "gt", "value": 100},
+            ]
+        }
         assert e._evaluate_condition(cond, ctx) is True
 
     def test_any_combinator(self):
         e = self._engine()
         ctx = {"agent": {"trust_score": 0.9}, "cost": 200}
-        cond = {"any": [
-            {"field": "agent.trust_score", "op": "lt", "value": 0.3},
-            {"field": "cost", "op": "gt", "value": 100},
-        ]}
+        cond = {
+            "any": [
+                {"field": "agent.trust_score", "op": "lt", "value": 0.3},
+                {"field": "cost", "op": "gt", "value": 100},
+            ]
+        }
         assert e._evaluate_condition(cond, ctx) is True
 
     def test_not_combinator(self):
@@ -56,13 +60,17 @@ class TestConditionEvaluator:
     def test_nested_boolean(self):
         e = self._engine()
         ctx = {"agent": {"trust_score": 0.1, "status": "active"}, "cost": 50}
-        cond = {"all": [
-            {"field": "agent.trust_score", "op": "lt", "value": 0.3},
-            {"any": [
-                {"field": "cost", "op": "gt", "value": 100},
-                {"field": "agent.status", "op": "eq", "value": "active"},
-            ]}
-        ]}
+        cond = {
+            "all": [
+                {"field": "agent.trust_score", "op": "lt", "value": 0.3},
+                {
+                    "any": [
+                        {"field": "cost", "op": "gt", "value": 100},
+                        {"field": "agent.status", "op": "eq", "value": "active"},
+                    ]
+                },
+            ]
+        }
         assert e._evaluate_condition(cond, ctx) is True
 
     def test_missing_field_returns_false(self):

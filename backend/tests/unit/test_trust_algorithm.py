@@ -16,8 +16,11 @@ class TestTrustAlgorithm:
         """Good performance should increase trust."""
         initial_trust = sample_agent.trust_score
         scores = TrustScoreInput(
-            quality_score=0.95, latency_score=0.9, cost_score=0.85,
-            consistency_score=0.9, reliability_score=0.95,
+            quality_score=0.95,
+            latency_score=0.9,
+            cost_score=0.85,
+            consistency_score=0.9,
+            reliability_score=0.95,
         )
         event = await service.record_trust_event(sample_agent.agent_id, scores)
         assert event.new_trust > initial_trust * 0.9  # Should be close to or above initial
@@ -27,8 +30,11 @@ class TestTrustAlgorithm:
         """Poor performance should decrease trust."""
         initial_trust = sample_agent.trust_score
         scores = TrustScoreInput(
-            quality_score=0.1, latency_score=0.1, cost_score=0.1,
-            consistency_score=0.1, reliability_score=0.1,
+            quality_score=0.1,
+            latency_score=0.1,
+            cost_score=0.1,
+            consistency_score=0.1,
+            reliability_score=0.1,
         )
         event = await service.record_trust_event(sample_agent.agent_id, scores)
         assert event.new_trust < initial_trust
@@ -39,8 +45,11 @@ class TestTrustAlgorithm:
         # Push trust very low
         for _ in range(10):
             scores = TrustScoreInput(
-                quality_score=0.0, latency_score=0.0, cost_score=0.0,
-                consistency_score=0.0, reliability_score=0.0,
+                quality_score=0.0,
+                latency_score=0.0,
+                cost_score=0.0,
+                consistency_score=0.0,
+                reliability_score=0.0,
             )
             event = await service.record_trust_event(sample_agent.agent_id, scores)
         assert event.new_trust >= TrustService.TRUST_FLOOR
@@ -49,8 +58,11 @@ class TestTrustAlgorithm:
     async def test_learning_rate_decreases(self, service, sample_agent):
         """Alpha should decrease with more interactions (more stable scores)."""
         scores = TrustScoreInput(
-            quality_score=0.5, latency_score=0.5, cost_score=0.5,
-            consistency_score=0.5, reliability_score=0.5,
+            quality_score=0.5,
+            latency_score=0.5,
+            cost_score=0.5,
+            consistency_score=0.5,
+            reliability_score=0.5,
         )
         event1 = await service.record_trust_event(sample_agent.agent_id, scores)
         event2 = await service.record_trust_event(sample_agent.agent_id, scores)

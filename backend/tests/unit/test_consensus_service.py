@@ -117,9 +117,7 @@ class TestConsensusService:
         for i in range(3):
             await _create_verifier(db_session, trust_score=0.85, suffix=f"disagree-{i}")
 
-        mock_response = _make_llm_response(
-            agree=False, confidence=0.9, reasoning="Output contains factual errors"
-        )
+        mock_response = _make_llm_response(agree=False, confidence=0.9, reasoning="Output contains factual errors")
 
         with patch.object(service.router, "generate", new_callable=AsyncMock, return_value=mock_response):
             result = await service.verify_with_consensus(

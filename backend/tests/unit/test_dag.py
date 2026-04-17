@@ -9,13 +9,15 @@ from app.models.base import TaskStatus
 class TestDAG:
     def _make_dag(self) -> DAG:
         """Create a standard test DAG: t1 -> t2 -> t3, t2 -> t4 (parallel with t3)."""
-        return DAG([
-            DAGNode(node_id="t1", capability="intake", description="Step 1", depends_on=[]),
-            DAGNode(node_id="t2", capability="research", description="Step 2", depends_on=["t1"]),
-            DAGNode(node_id="t3", capability="analysis", description="Step 3", depends_on=["t2"]),
-            DAGNode(node_id="t4", capability="risk", description="Step 4", depends_on=["t2"]),
-            DAGNode(node_id="t5", capability="summary", description="Step 5", depends_on=["t3", "t4"]),
-        ])
+        return DAG(
+            [
+                DAGNode(node_id="t1", capability="intake", description="Step 1", depends_on=[]),
+                DAGNode(node_id="t2", capability="research", description="Step 2", depends_on=["t1"]),
+                DAGNode(node_id="t3", capability="analysis", description="Step 3", depends_on=["t2"]),
+                DAGNode(node_id="t4", capability="risk", description="Step 4", depends_on=["t2"]),
+                DAGNode(node_id="t5", capability="summary", description="Step 5", depends_on=["t3", "t4"]),
+            ]
+        )
 
     def test_valid_dag_creation(self):
         dag = self._make_dag()
@@ -23,17 +25,21 @@ class TestDAG:
 
     def test_cycle_detection(self):
         with pytest.raises(DAGValidationError, match="cycle"):
-            DAG([
-                DAGNode(node_id="a", capability="x", description="A", depends_on=["c"]),
-                DAGNode(node_id="b", capability="y", description="B", depends_on=["a"]),
-                DAGNode(node_id="c", capability="z", description="C", depends_on=["b"]),
-            ])
+            DAG(
+                [
+                    DAGNode(node_id="a", capability="x", description="A", depends_on=["c"]),
+                    DAGNode(node_id="b", capability="y", description="B", depends_on=["a"]),
+                    DAGNode(node_id="c", capability="z", description="C", depends_on=["b"]),
+                ]
+            )
 
     def test_invalid_dependency_ref(self):
         with pytest.raises(DAGValidationError, match="non-existent"):
-            DAG([
-                DAGNode(node_id="t1", capability="x", description="T1", depends_on=["missing"]),
-            ])
+            DAG(
+                [
+                    DAGNode(node_id="t1", capability="x", description="T1", depends_on=["missing"]),
+                ]
+            )
 
     def test_topological_sort(self):
         dag = self._make_dag()

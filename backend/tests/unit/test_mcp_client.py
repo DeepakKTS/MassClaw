@@ -17,6 +17,7 @@ from app.tools.base import ExecutionMode, ToolContext
 # MCPServerConfig
 # ---------------------------------------------------------------------------
 
+
 def test_mcp_server_config():
     """MCPServerConfig stores all fields correctly."""
     config = MCPServerConfig(
@@ -41,6 +42,7 @@ def test_mcp_server_config_defaults():
 # ---------------------------------------------------------------------------
 # MCPToolProvider
 # ---------------------------------------------------------------------------
+
 
 def _make_mcp_client(server_name: str = "test-server") -> MagicMock:
     client = MagicMock(spec=MCPClient)
@@ -139,6 +141,7 @@ async def test_mcp_tool_provider_execute_error():
 # ---------------------------------------------------------------------------
 # MCPServerManager — CRUD
 # ---------------------------------------------------------------------------
+
 
 def test_mcp_server_manager_crud():
     """MCPServerManager supports add/get/remove/list operations on configs."""

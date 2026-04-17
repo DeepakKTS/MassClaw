@@ -361,10 +361,10 @@ class TestWorkflowFailureHandling:
                 workflow_id=workflow.workflow_id,
                 assigned_agent_id=sample_agent.agent_id,
                 step_number=i + 1,
-                capability=f"step-{i+1}",
-                description=f"Step {i+1} that fails",
+                capability=f"step-{i + 1}",
+                description=f"Step {i + 1} that fails",
                 status=TaskStatus.FAILED,
-                error_message=f"Error in step {i+1}",
+                error_message=f"Error in step {i + 1}",
             )
             db_session.add(task)
         await db_session.flush()

@@ -17,6 +17,7 @@ from app.protocols.router import ProtocolRouter
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_agent(
     protocol_type: str | None = None,
     endpoint: str = "http://agent-host/api",
@@ -43,6 +44,7 @@ def _make_message() -> AgentMessage:
 # ---------------------------------------------------------------------------
 # HTTPAdapter tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_http_send_message_success():
@@ -119,6 +121,7 @@ async def test_http_health_check_no_url():
 # ---------------------------------------------------------------------------
 # ProtocolRouter tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_router_routes_to_http():

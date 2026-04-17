@@ -165,6 +165,14 @@ class Settings(BaseSettings):
     gossip_interval_seconds: float = 30.0
     gossip_fanout: int = 2
 
+    # Demo mode — enables operator-only endpoints used by the federation
+    # docker-compose (self-signing memory writes with the instance key,
+    # seeding a shared workflow UUID on each node). NEVER enable in a
+    # production deployment: the self-sign endpoint lets anyone with HTTP
+    # access author records as the node itself, bypassing peer-identity
+    # attribution. Default off; federation.yml sets it to true.
+    massclaw_demo_mode: bool = False
+
     @field_validator("massclaw_federation_peers", mode="before")
     @classmethod
     def _coerce_federation_peers(cls, value: Any) -> str:

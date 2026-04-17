@@ -84,9 +84,7 @@ class TestEvolutionService:
         """Recording a score should persist the record with the correct composite value."""
         agent = await _create_agent(db_session)
 
-        scores = ScoreInput(
-            quality=0.9, speed=0.8, cost_efficiency=0.7, consistency=0.85, reliability=0.95
-        )
+        scores = ScoreInput(quality=0.9, speed=0.8, cost_efficiency=0.7, consistency=0.85, reliability=0.95)
 
         with patch("app.services.evolution_service.EventBus.publish_dict", new_callable=AsyncMock, return_value=0):
             record = await service.record_score(agent.agent_id, scores)
@@ -103,9 +101,7 @@ class TestEvolutionService:
         assert record.composite == expected
 
         # Verify persistence in DB
-        result = await db_session.execute(
-            select(AgentScore).where(AgentScore.score_id == record.score_id)
-        )
+        result = await db_session.execute(select(AgentScore).where(AgentScore.score_id == record.score_id))
         persisted = result.scalar_one()
         assert persisted.composite == expected
 

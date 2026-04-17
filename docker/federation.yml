@@ -1,0 +1,312 @@
+# Three-node MassClaw federation — the GATING demo environment for Phase 1.
+#
+# Every node is a complete MassClaw stack (postgres + redis + backend +
+# worker) with its own instance Ed25519 keypair. The three nodes discover
+# each other through MASSCLAW_FEDERATION_PEERS and reconcile their signed
+# memory state every 5 seconds via the gossip protocol.
+#
+# Bring up:   ./scripts/demo_up.sh      (or: docker compose -f docker/federation.yml up -d)
+# Tear down:  ./scripts/demo_down.sh
+# Partition:  ./scripts/demo_partition.sh node-c
+# Heal:       ./scripts/demo_heal.sh node-c
+# Run e2e:    ./scripts/demo_federation_test.sh
+#
+# The compose file is deliberately verbose — three parallel stacks so a
+# reader can confirm the nodes are genuinely independent. Ports:
+#   node-a: backend 18001, postgres 15441, redis 16381
+#   node-b: backend 18002, postgres 15442, redis 16382
+#   node-c: backend 18003, postgres 15443, redis 16383
+
+version: "3.9"
+
+x-backend-image: &backend-image
+  build:
+    context: ../backend
+    dockerfile: Dockerfile
+
+x-backend-env: &backend-env
+  AUTH_REQUIRED: "false"
+  LOG_LEVEL: INFO
+  LOG_FORMAT: json
+  IDENTITY_KEY_ENCRYPTION_KEY: "${FEDERATION_KEK:-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff}"
+  IDENTITY_TRUST_ZONE: federation-demo
+  MASSCLAW_DEMO_MODE: "true"
+  # Fast gossip cadence so convergence is visibly fast in demos. Production
+  # defaults to 30s; 5s is safe because traffic is low in a demo.
+  GOSSIP_INTERVAL_SECONDS: "5"
+  GOSSIP_FANOUT: "2"
+
+services:
+  # ============================================================ node-a
+  postgres-a:
+    image: pgvector/pgvector:pg16
+    container_name: massclaw-fed-postgres-a
+    environment:
+      POSTGRES_USER: massclaw
+      POSTGRES_PASSWORD: massclaw
+      POSTGRES_DB: massclaw
+    ports:
+      - "15441:5432"
+    tmpfs:
+      - /var/lib/postgresql/data  # ephemeral — demo resets state every run.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U massclaw"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fed
+
+  redis-a:
+    image: redis:7-alpine
+    container_name: massclaw-fed-redis-a
+    ports:
+      - "16381:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fed
+
+  backend-a:
+    <<: *backend-image
+    container_name: massclaw-fed-backend-a
+    entrypoint: ["/bin/sh", "/app/docker/federation/entrypoint-backend.sh"]
+    ports:
+      - "18001:8000"
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres-a:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres-a:5432/massclaw
+      REDIS_URL: redis://redis-a:6379/0
+      CELERY_BROKER_URL: redis://redis-a:6379/3
+      CELERY_RESULT_BACKEND: redis://redis-a:6379/3
+      IDENTITY_INSTANCE_KEY_PATH: /data/instance.key
+      IDENTITY_INSTANCE_NAME: "MassClaw (node-a)"
+      IDENTITY_PUBLIC_BASE_URL: http://backend-a:8000
+      MASSCLAW_FEDERATION_PEERS: http://backend-b:8000,http://backend-c:8000
+    volumes:
+      - ./federation:/app/docker/federation:ro
+    tmpfs:
+      - /data
+    depends_on:
+      postgres-a:
+        condition: service_healthy
+      redis-a:
+        condition: service_healthy
+    networks:
+      - fed
+
+  worker-a:
+    <<: *backend-image
+    container_name: massclaw-fed-worker-a
+    entrypoint: ["/bin/sh", "/app/docker/federation/entrypoint-worker.sh"]
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres-a:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres-a:5432/massclaw
+      REDIS_URL: redis://redis-a:6379/0
+      CELERY_BROKER_URL: redis://redis-a:6379/3
+      CELERY_RESULT_BACKEND: redis://redis-a:6379/3
+      IDENTITY_INSTANCE_KEY_PATH: /data/instance.key
+      IDENTITY_INSTANCE_NAME: "MassClaw (node-a)"
+      IDENTITY_PUBLIC_BASE_URL: http://backend-a:8000
+      MASSCLAW_FEDERATION_PEERS: http://backend-b:8000,http://backend-c:8000
+    volumes:
+      - ./federation:/app/docker/federation:ro
+    tmpfs:
+      - /data
+    depends_on:
+      backend-a:
+        condition: service_started
+    networks:
+      - fed
+
+  # ============================================================ node-b
+  postgres-b:
+    image: pgvector/pgvector:pg16
+    container_name: massclaw-fed-postgres-b
+    environment:
+      POSTGRES_USER: massclaw
+      POSTGRES_PASSWORD: massclaw
+      POSTGRES_DB: massclaw
+    ports:
+      - "15442:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U massclaw"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fed
+
+  redis-b:
+    image: redis:7-alpine
+    container_name: massclaw-fed-redis-b
+    ports:
+      - "16382:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fed
+
+  backend-b:
+    <<: *backend-image
+    container_name: massclaw-fed-backend-b
+    entrypoint: ["/bin/sh", "/app/docker/federation/entrypoint-backend.sh"]
+    ports:
+      - "18002:8000"
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres-b:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres-b:5432/massclaw
+      REDIS_URL: redis://redis-b:6379/0
+      CELERY_BROKER_URL: redis://redis-b:6379/3
+      CELERY_RESULT_BACKEND: redis://redis-b:6379/3
+      IDENTITY_INSTANCE_KEY_PATH: /data/instance.key
+      IDENTITY_INSTANCE_NAME: "MassClaw (node-b)"
+      IDENTITY_PUBLIC_BASE_URL: http://backend-b:8000
+      MASSCLAW_FEDERATION_PEERS: http://backend-a:8000,http://backend-c:8000
+    volumes:
+      - ./federation:/app/docker/federation:ro
+    tmpfs:
+      - /data
+    depends_on:
+      postgres-b:
+        condition: service_healthy
+      redis-b:
+        condition: service_healthy
+    networks:
+      - fed
+
+  worker-b:
+    <<: *backend-image
+    container_name: massclaw-fed-worker-b
+    entrypoint: ["/bin/sh", "/app/docker/federation/entrypoint-worker.sh"]
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres-b:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres-b:5432/massclaw
+      REDIS_URL: redis://redis-b:6379/0
+      CELERY_BROKER_URL: redis://redis-b:6379/3
+      CELERY_RESULT_BACKEND: redis://redis-b:6379/3
+      IDENTITY_INSTANCE_KEY_PATH: /data/instance.key
+      IDENTITY_INSTANCE_NAME: "MassClaw (node-b)"
+      IDENTITY_PUBLIC_BASE_URL: http://backend-b:8000
+      MASSCLAW_FEDERATION_PEERS: http://backend-a:8000,http://backend-c:8000
+    volumes:
+      - ./federation:/app/docker/federation:ro
+    tmpfs:
+      - /data
+    depends_on:
+      backend-b:
+        condition: service_started
+    networks:
+      - fed
+
+  # ============================================================ node-c
+  postgres-c:
+    image: pgvector/pgvector:pg16
+    container_name: massclaw-fed-postgres-c
+    environment:
+      POSTGRES_USER: massclaw
+      POSTGRES_PASSWORD: massclaw
+      POSTGRES_DB: massclaw
+    ports:
+      - "15443:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U massclaw"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fed
+
+  redis-c:
+    image: redis:7-alpine
+    container_name: massclaw-fed-redis-c
+    ports:
+      - "16383:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fed
+
+  backend-c:
+    <<: *backend-image
+    container_name: massclaw-fed-backend-c
+    entrypoint: ["/bin/sh", "/app/docker/federation/entrypoint-backend.sh"]
+    ports:
+      - "18003:8000"
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres-c:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres-c:5432/massclaw
+      REDIS_URL: redis://redis-c:6379/0
+      CELERY_BROKER_URL: redis://redis-c:6379/3
+      CELERY_RESULT_BACKEND: redis://redis-c:6379/3
+      IDENTITY_INSTANCE_KEY_PATH: /data/instance.key
+      IDENTITY_INSTANCE_NAME: "MassClaw (node-c)"
+      IDENTITY_PUBLIC_BASE_URL: http://backend-c:8000
+      MASSCLAW_FEDERATION_PEERS: http://backend-a:8000,http://backend-b:8000
+    volumes:
+      - ./federation:/app/docker/federation:ro
+    tmpfs:
+      - /data
+    depends_on:
+      postgres-c:
+        condition: service_healthy
+      redis-c:
+        condition: service_healthy
+    networks:
+      - fed
+
+  worker-c:
+    <<: *backend-image
+    container_name: massclaw-fed-worker-c
+    entrypoint: ["/bin/sh", "/app/docker/federation/entrypoint-worker.sh"]
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://massclaw:massclaw@postgres-c:5432/massclaw
+      DATABASE_SYNC_URL: postgresql://massclaw:massclaw@postgres-c:5432/massclaw
+      REDIS_URL: redis://redis-c:6379/0
+      CELERY_BROKER_URL: redis://redis-c:6379/3
+      CELERY_RESULT_BACKEND: redis://redis-c:6379/3
+      IDENTITY_INSTANCE_KEY_PATH: /data/instance.key
+      IDENTITY_INSTANCE_NAME: "MassClaw (node-c)"
+      IDENTITY_PUBLIC_BASE_URL: http://backend-c:8000
+      MASSCLAW_FEDERATION_PEERS: http://backend-a:8000,http://backend-b:8000
+    volumes:
+      - ./federation:/app/docker/federation:ro
+    tmpfs:
+      - /data
+    depends_on:
+      backend-c:
+        condition: service_started
+    networks:
+      - fed
+
+networks:
+  # Named so the demo scripts can address it explicitly when partitioning
+  # a single container (docker network disconnect massclaw-fed-network ...).
+  fed:
+    name: massclaw-fed-network
+    driver: bridge

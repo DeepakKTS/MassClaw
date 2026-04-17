@@ -243,12 +243,8 @@ class TestSensitiveMode:
             _candidate("A", confidence=0.9, author_trust=0.9, created_at=now),
             _candidate("B", confidence=0.9, author_trust=0.882, created_at=now),
         ]
-        permissive = resolve_fact(
-            candidates, mode=ReadMode.SENSITIVE, now=now, sensitive_rank_delta=0.05
-        )
-        strict = resolve_fact(
-            candidates, mode=ReadMode.SENSITIVE, now=now, sensitive_rank_delta=0.001
-        )
+        permissive = resolve_fact(candidates, mode=ReadMode.SENSITIVE, now=now, sensitive_rank_delta=0.05)
+        strict = resolve_fact(candidates, mode=ReadMode.SENSITIVE, now=now, sensitive_rank_delta=0.001)
         # 0.009 gap: within 0.05 band → HITL; outside 0.001 band → no HITL.
         assert permissive.requires_hitl is True
         assert strict.requires_hitl is False
@@ -261,9 +257,7 @@ class TestSensitiveMode:
             _candidate("same", confidence=0.9, author_did="did:key:z-b", author_trust=0.9, created_at=now),
         ]
         for delta in (0.0001, 0.5, 1.0):
-            result = resolve_fact(
-                agreement, mode=ReadMode.SENSITIVE, now=now, sensitive_rank_delta=delta
-            )
+            result = resolve_fact(agreement, mode=ReadMode.SENSITIVE, now=now, sensitive_rank_delta=delta)
             assert result.requires_hitl is False, f"delta={delta} unexpectedly triggered HITL"
             assert result.chosen is not None
 
@@ -312,9 +306,7 @@ class TestInvariants:
         b = resolve_fact(candidates, mode=ReadMode.PLANNING, now=now)
         assert a.chosen == b.chosen
         assert [r.rank for r in a.candidates] == [r.rank for r in b.candidates]
-        assert [r.candidate.content for r in a.candidates] == [
-            r.candidate.content for r in b.candidates
-        ]
+        assert [r.candidate.content for r in a.candidates] == [r.candidate.content for r in b.candidates]
 
     def test_tie_break_is_stable(self) -> None:
         """Two candidates with exactly equal rank must order consistently."""

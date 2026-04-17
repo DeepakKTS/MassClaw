@@ -75,10 +75,13 @@ class TestStockAgentFlow:
 
     def test_06_submit_task(self, client):
         """Agent submits a plain-English task."""
-        resp = client.post("/api/v1/workflows/submit", json={
-            "instruction": "Summarize the key risks of AI in healthcare scheduling",
-            "budget": 200,
-        })
+        resp = client.post(
+            "/api/v1/workflows/submit",
+            json={
+                "instruction": "Summarize the key risks of AI in healthcare scheduling",
+                "budget": 200,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "workflow_id" in data
@@ -111,11 +114,14 @@ class TestStockAgentFlow:
 
     def test_09_query_memory(self, client):
         """Agent queries shared memory."""
-        resp = client.post("/api/v1/memory/query", json={
-            "query": "healthcare scheduling risks",
-            "min_similarity": 0.3,
-            "top_k": 5,
-        })
+        resp = client.post(
+            "/api/v1/memory/query",
+            json={
+                "query": "healthcare scheduling risks",
+                "min_similarity": 0.3,
+                "top_k": 5,
+            },
+        )
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
 
@@ -135,10 +141,13 @@ class TestStockAgentFlow:
 
     def test_12_policy_evaluate(self, client):
         """Agent checks policy evaluation."""
-        resp = client.post("/api/v1/policy/evaluate", json={
-            "action": "execute_workflow",
-            "context": {"domain": "healthcare", "budget": 200},
-        })
+        resp = client.post(
+            "/api/v1/policy/evaluate",
+            json={
+                "action": "execute_workflow",
+                "context": {"domain": "healthcare", "budget": 200},
+            },
+        )
         assert resp.status_code == 200
 
     def test_13_evolution_rankings(self, client):
@@ -152,39 +161,52 @@ class TestInputValidation:
 
     def test_empty_instruction_rejected(self, client):
         """Empty instruction should be rejected."""
-        resp = client.post("/api/v1/workflows/submit", json={
-            "instruction": "",
-            "budget": 100,
-        })
+        resp = client.post(
+            "/api/v1/workflows/submit",
+            json={
+                "instruction": "",
+                "budget": 100,
+            },
+        )
         assert resp.status_code == 422
 
     def test_negative_budget_rejected(self, client):
         """Negative budget should be rejected."""
-        resp = client.post("/api/v1/workflows/submit", json={
-            "instruction": "Valid instruction here",
-            "budget": -100,
-        })
+        resp = client.post(
+            "/api/v1/workflows/submit",
+            json={
+                "instruction": "Valid instruction here",
+                "budget": -100,
+            },
+        )
         assert resp.status_code == 422
 
     def test_excessive_budget_rejected(self, client):
         """Budget over 10000 should be rejected."""
-        resp = client.post("/api/v1/workflows/submit", json={
-            "instruction": "Valid instruction here",
-            "budget": 99999,
-        })
+        resp = client.post(
+            "/api/v1/workflows/submit",
+            json={
+                "instruction": "Valid instruction here",
+                "budget": 99999,
+            },
+        )
         assert resp.status_code == 422
 
     def test_missing_instruction_rejected(self, client):
         """Missing instruction field should be rejected."""
-        resp = client.post("/api/v1/workflows/submit", json={
-            "budget": 100,
-        })
+        resp = client.post(
+            "/api/v1/workflows/submit",
+            json={
+                "budget": 100,
+            },
+        )
         assert resp.status_code == 422
 
     def test_invalid_json_rejected(self, client):
         """Malformed JSON should be rejected."""
-        resp = client.post("/api/v1/workflows/submit", content=b"not json",
-                          headers={"Content-Type": "application/json"})
+        resp = client.post(
+            "/api/v1/workflows/submit", content=b"not json", headers={"Content-Type": "application/json"}
+        )
         assert resp.status_code == 422
 
     def test_nonexistent_workflow(self, client):
