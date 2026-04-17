@@ -35,6 +35,10 @@ x-backend-env: &backend-env
   # defaults to 30s; 5s is safe because traffic is low in a demo.
   GOSSIP_INTERVAL_SECONDS: "5"
   GOSSIP_FANOUT: "2"
+  # All three demo nodes are reachable from the host dev machine — allow
+  # the frontend (on :3000, :3001, :3002) to call any of them without
+  # CORS getting in the way.
+  CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3002","http://localhost:18001","http://localhost:18002","http://localhost:18003"]'
 
 services:
   # ============================================================ node-a

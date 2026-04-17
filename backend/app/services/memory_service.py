@@ -645,12 +645,19 @@ class MemoryService:
         }
 
         # 1. Expire → tombstone (signed records) OR hard-delete (unsigned).
-        expired_stmt = select(MemoryRecord).where(
-            and_(
-                MemoryRecord.expires_at.isnot(None),
-                MemoryRecord.expires_at < now,
-                MemoryRecord.record_state.in_([RecordState.ACTIVE, RecordState.SUPERSEDED]),
+        #    LIMIT caps a single GC run so a big backlog can't OOM the
+        #    worker — the next Celery tick finishes what's left.
+        _GC_BATCH = 10_000
+        expired_stmt = (
+            select(MemoryRecord)
+            .where(
+                and_(
+                    MemoryRecord.expires_at.isnot(None),
+                    MemoryRecord.expires_at < now,
+                    MemoryRecord.record_state.in_([RecordState.ACTIVE, RecordState.SUPERSEDED]),
+                )
             )
+            .limit(_GC_BATCH)
         )
         for row in (await self.session.execute(expired_stmt)).scalars().all():
             row.record_state = RecordState.TOMBSTONED
@@ -672,12 +679,16 @@ class MemoryService:
 
         # 3. Archive old + low-confidence ACTIVE/SUPERSEDED records.
         archive_cutoff = run_policy.archive_cutoff(now=now)
-        archive_stmt = select(MemoryRecord).where(
-            and_(
-                MemoryRecord.record_state.in_([RecordState.ACTIVE, RecordState.SUPERSEDED]),
-                MemoryRecord.created_at < archive_cutoff,
-                MemoryRecord.confidence < run_policy.low_confidence_threshold,
+        archive_stmt = (
+            select(MemoryRecord)
+            .where(
+                and_(
+                    MemoryRecord.record_state.in_([RecordState.ACTIVE, RecordState.SUPERSEDED]),
+                    MemoryRecord.created_at < archive_cutoff,
+                    MemoryRecord.confidence < run_policy.low_confidence_threshold,
+                )
             )
+            .limit(_GC_BATCH)
         )
         for row in (await self.session.execute(archive_stmt)).scalars().all():
             if is_archive_candidate(

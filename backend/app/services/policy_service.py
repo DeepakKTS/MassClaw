@@ -364,6 +364,10 @@ class PolicyService:
 
         return decision
 
+    def analyze_injection(self, content: str):
+        """Public accessor — keeps API endpoints from poking at ``_injection_detector``."""
+        return self._injection_detector.analyze(content)
+
     def evaluate_content(self, content: str) -> ContentSafetyResult:
         """Run both content filter and injection detector, combine results."""
         content_analysis = self._content_filter.analyze(content)

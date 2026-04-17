@@ -9,7 +9,7 @@ import { useState } from "react";
 
 export default function AgentsPage() {
   const [page, setPage] = useState(1);
-  const { data, isLoading } = useAgents(page);
+  const { data, isLoading, error } = useAgents(page);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 py-6">
@@ -20,8 +20,18 @@ export default function AgentsPage() {
         </p>
       </div>
 
+      {error && (
+        <div className="glass rounded-xl p-4 border border-massclaw-danger/20 text-massclaw-danger text-sm">
+          Failed to load agents: {error instanceof Error ? error.message : "Unknown error"}
+        </div>
+      )}
+
       {isLoading ? (
         <div className="text-massclaw-text-muted text-sm">Loading agents...</div>
+      ) : (data?.items?.length ?? 0) === 0 ? (
+        <div className="glass rounded-xl p-8 text-center text-massclaw-text-muted text-sm">
+          No agents registered yet. Agents appear here once the registry is seeded.
+        </div>
       ) : (
         <div className="grid gap-3">
           {data?.items.map((agent) => (

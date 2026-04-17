@@ -4,7 +4,9 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
 from app.dependencies import get_audit_service
 from app.models.base import ActorType, AuditEventType
 from app.schemas.audit import AuditLogResponse, AuditQueryParams
@@ -111,15 +113,15 @@ async def list_policy_decisions(
     action: str | None = Query(
         default=None,
         description="Filter by decision action (allow, deny, escalate_human).",
+        max_length=64,
     ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Return signed policy-decision records newest-first."""
     from fastapi import HTTPException
-    from sqlalchemy.ext.asyncio import AsyncSession
 
-    from app.core.database import get_db_session
     from app.safety.audit import (
         POLICY_CONTEXT_SUMMARY_KEY,
         POLICY_DECISION_PAYLOAD_KEY,
@@ -134,18 +136,13 @@ async def list_policy_decisions(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"unknown action {action!r}") from exc
 
-    session: AsyncSession
-    async for session in get_db_session():
-        records = await list_decisions(
-            session,
-            workflow_id=workflow_id,
-            action=parsed_action,
-            limit=limit,
-            offset=offset,
-        )
-        break
-    else:
-        return []
+    records = await list_decisions(
+        session,
+        workflow_id=workflow_id,
+        action=parsed_action,
+        limit=limit,
+        offset=offset,
+    )
 
     return [
         {

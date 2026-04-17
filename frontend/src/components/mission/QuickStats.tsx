@@ -37,7 +37,7 @@ export function QuickStats() {
   const { data: workflows } = useWorkflows();
   const { data: metrics } = useQuery({
     queryKey: ["system-metrics"],
-    queryFn: () => api.get<any>("/../../system/metrics"),
+    queryFn: () => api.getRaw<any>("/system/metrics"),
     retry: false,
   });
 

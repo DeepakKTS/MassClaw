@@ -225,7 +225,7 @@ async def analyze_injection(
     service: PolicyService = Depends(get_policy_service),
 ) -> InjectionAnalysisResponse:
     """Run injection detection analysis on the provided text."""
-    assessment = service._injection_detector.analyze(body.content)
+    assessment = service.analyze_injection(body.content)
     return InjectionAnalysisResponse(
         detected=assessment.detected,
         confidence=assessment.confidence,

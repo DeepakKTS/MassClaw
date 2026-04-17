@@ -127,9 +127,11 @@ class SprintTaskOut(BaseModel):
 class SprintTaskExecute(BaseModel):
     """Body for the execute endpoint -- triggers a new workflow for this task."""
 
-    prompt: str = Field(..., description="Prompt for the workflow execution")
-    domain: str | None = None
-    budget_limit: float = Field(default=1.0, ge=0)
+    prompt: str = Field(..., min_length=1, max_length=50000, description="Prompt for the workflow execution")
+    domain: str | None = Field(default=None, max_length=100)
+    # gt=0 avoids zero-budget workflows that would divide-by-zero
+    # downstream cost calculations.
+    budget_limit: float = Field(default=1.0, gt=0, le=10_000)
 
 
 # ── Project Endpoints ────────────────────────────────────────────────
