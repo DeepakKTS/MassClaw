@@ -14,6 +14,25 @@ from app.models.base import AgentStatus
 from sqlalchemy import select
 
 
+# Every seeded agent gets the full set of built-in tools exposed through its
+# agentic loop. MassClaw's tool layer gates by `agent.supported_tools` — if a
+# tool isn't in this dict the agent's LLM simply never sees it in the tool
+# list, so the planner can route a task to an agent by capability only for
+# that agent to report "code_execute not available" at runtime (exactly what
+# the OpenClaw harness caught on s5). Giving every agent every tool mirrors
+# production reality where the tool registry IS the agent's toolbelt, and the
+# capability match decides which agent picks up each task.
+_ALL_BUILTIN_TOOLS: dict = {
+    "web_search": True,
+    "web_scrape": True,
+    "code_execute": True,
+    "file_read": True,
+    "file_write": True,
+    "file_list": True,
+    "api_call": True,
+}
+
+
 SEED_AGENTS = [
     {
         "name": "Intake Agent",
@@ -129,6 +148,7 @@ async def seed() -> None:
                 safety_level=agent_data["safety_level"],
                 version=agent_data["version"],
                 status=AgentStatus.ACTIVE,
+                supported_tools=_ALL_BUILTIN_TOOLS,
             )
             session.add(agent)
             print(f"  + {agent.name} (trust={agent.trust_score})")
