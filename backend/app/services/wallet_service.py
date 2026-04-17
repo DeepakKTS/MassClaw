@@ -386,6 +386,79 @@ class WalletService:
 
         return release_event
 
+    async def record_internal_cost(
+        self,
+        workflow_id: uuid.UUID,
+        amount: float,
+        reason: str,
+        agent_id: uuid.UUID | None = None,
+    ) -> WalletEvent:
+        """Record a DEBIT directly — for execution paths that don't pre-reserve.
+
+        The event-sourced wallet normally requires ``reserve_budget`` → ``charge``
+        so there is an atomic guard against double-spend. But some execution
+        paths (direct-response single-call workflows, iterative agent-reflect
+        loops that can't predict cost) know the actual cost only at the end
+        and have no meaningful reservation to charge against. This method
+        writes a standalone DEBIT event + updates ``workflow.budget_used`` so
+        the ledger stays authoritative and ``GET /wallet/workflow/{id}/events``
+        reflects every debit that occurred.
+
+        Raises BudgetExhaustedError if the cost would push usage past the cap.
+        """
+        if amount <= 0:
+            return await self._get_noop(workflow_id)
+
+        workflow = await self._get_workflow(workflow_id)
+        budget_used = await self._compute_balance_from_events(workflow_id)
+        new_balance = budget_used + amount
+
+        if new_balance > float(workflow.budget_limit):
+            raise BudgetExhaustedError(
+                f"Internal cost {amount:.4f} would exceed budget cap: "
+                f"used {budget_used:.4f} + cost {amount:.4f} > limit "
+                f"{float(workflow.budget_limit):.4f}"
+            )
+
+        event = WalletEvent(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            action_type=WalletActionType.DEBIT,
+            debit_delta=Decimal(str(amount)),
+            balance_after=Decimal(str(new_balance)),
+            reason=reason,
+        )
+        self.session.add(event)
+
+        await self.session.execute(
+            update(Workflow)
+            .where(Workflow.workflow_id == workflow_id)
+            .values(budget_used=Decimal(str(new_balance)))
+        )
+        await self.session.flush()
+        await self.session.refresh(event)
+
+        await self._invalidate_cache(workflow_id)
+
+        logger.info(
+            "wallet_internal_cost_recorded",
+            workflow_id=str(workflow_id),
+            amount=amount,
+            new_balance=new_balance,
+        )
+        return event
+
+    async def _get_noop(self, workflow_id: uuid.UUID) -> WalletEvent:
+        """Return a transient no-op event for zero-cost recordings."""
+        return WalletEvent(
+            workflow_id=workflow_id,
+            agent_id=None,
+            action_type=WalletActionType.DEBIT,
+            debit_delta=Decimal("0"),
+            balance_after=Decimal("0"),
+            reason="noop",
+        )
+
     async def credit(
         self,
         workflow_id: uuid.UUID,

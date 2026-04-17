@@ -78,7 +78,7 @@ Fields:
 - `instruction` (string, required) — what you want done, in plain English
 - `budget` (integer, optional, default 100) — max credits MassClaw is allowed to spend; reject the task rather than exceed this
 - `domain` (string, optional, default "general") — hints at the domain so MassClaw picks the right agents
-- `priority` (string, optional, default "normal") — one of `low`, `normal`, `high`
+- `priority` (integer, optional, default `5`) — priority level 1–10 where 1 is highest
 
 Response:
 
@@ -97,16 +97,16 @@ Poll status until terminal:
 GET http://localhost:18001/api/v1/workflows/<id>/status
 ```
 
-Valid status values:
-- `PENDING` — queued
-- `DECOMPOSING` — MassClaw is breaking the task down
-- `RUNNING` — executing steps
-- `AWAITING_APPROVAL` — a human reviewer must approve before continuing (see HITL below)
-- `COMPLETED` — done; fetch the result
-- `FAILED` — execution error; the status payload has details
-- `CANCELLED` — user-terminated
+Valid `status` values (returned **lowercase**, exactly as shown):
+- `pending` — queued
+- `decomposing` — MassClaw is breaking the task down
+- `running` — executing steps
+- `awaiting_approval` — a human reviewer must approve before continuing (see HITL below)
+- `completed` — done; fetch the result
+- `failed` — execution error; the status payload has details
+- `cancelled` — user-terminated
 
-Poll every 1–3 seconds. Stop polling when status is `COMPLETED`, `FAILED`, or `CANCELLED`.
+Poll every 1–3 seconds. Stop polling when status ∈ {`completed`, `failed`, `cancelled`}. Use case-insensitive comparisons if in doubt — the API returns lowercase strings.
 
 When status is `COMPLETED`, fetch the result:
 
@@ -217,12 +217,14 @@ After calling `self-sign-write` on node A, wait ~10s, then `GET /memory/by-hash/
 
 Some tasks are high-risk (spending money, destructive file ops, public communication). MassClaw pauses those workflows before execution and waits for a human to approve.
 
-When you submit such a workflow, its status transitions through `PENDING` → `DECOMPOSING` → `AWAITING_APPROVAL`. When you see that state:
+When you submit such a workflow, its status transitions through `pending` → `decomposing` → `awaiting_approval`. When you see that state:
 
 1. Find the pending approval request:
    ```
    GET http://localhost:18001/api/v1/approvals/pending
    ```
+   Each pending item has fields including `request_id`, `checkpoint_hash` (important — keep it), `policy_rule`, and `action`.
+
 2. Approve it (or deny it):
    ```
    POST http://localhost:18001/api/v1/approvals/<request_id>/approve
@@ -230,16 +232,23 @@ When you submit such a workflow, its status transitions through `PENDING` → `D
 
    {"reason": "approved for test", "decided_by": "agent-operator"}
    ```
-3. Resume the workflow:
+   Response includes `approval_id` and `status: approved`.
+
+3. Resume the workflow (both `checkpoint_hash` and `approval_id` are required):
    ```
    POST http://localhost:18001/api/v1/workflows/<workflow_id>/resume
    Content-Type: application/json
 
-   {"approval_id": "<approval_id>"}
+   {
+     "checkpoint_hash": "<the checkpoint_hash from step 1>",
+     "approval_id": "<the approval_id from step 2>"
+   }
    ```
-4. Resume takes a few seconds. Poll `/status` until `COMPLETED`.
+   The checkpoint hash pins the resume to a specific paused state so an approval can't be replayed against a different checkpoint.
 
-To deny instead of approve, use `POST /api/v1/approvals/<request_id>/deny` with the same body shape.
+4. Resume takes a few seconds. Poll `/status` until `completed`.
+
+To deny instead of approve, use `POST /api/v1/approvals/<request_id>/deny` with the same body shape as `/approve`.
 
 ---
 

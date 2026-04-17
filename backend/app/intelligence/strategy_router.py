@@ -65,13 +65,18 @@ class StrategyRouter:
             temperature=0.7,
         )
 
-        # Track budget for direct responses
-        from decimal import Decimal
-
+        # Track budget for direct responses — through the wallet ledger
+        # so GET /wallet/workflow/{id}/events reflects the debit.
         from app.llm.token_counter import tokens_to_credits
+        from app.services.wallet_service import WalletService
 
         actual_cost = tokens_to_credits(response.cost)
-        workflow.budget_used = Decimal(str(actual_cost))
+        if actual_cost > 0:
+            await WalletService(self.session).record_internal_cost(
+                workflow_id=workflow.workflow_id,
+                amount=actual_cost,
+                reason="direct_response synthesis cost",
+            )
 
         result = {
             "content": response.content,
@@ -186,8 +191,16 @@ class StrategyRouter:
                 logger.warning("iterative_force_stopped", reason=reason)
                 break
 
-        # Track budget
-        workflow.budget_used = Decimal(str(total_cost))
+        # Track budget — single aggregate DEBIT since iterative mode computes
+        # cost only at the end. Ledger stays authoritative.
+        if total_cost > 0:
+            from app.services.wallet_service import WalletService
+
+            await WalletService(self.session).record_internal_cost(
+                workflow_id=workflow.workflow_id,
+                amount=total_cost,
+                reason=f"iterative execution over {iteration} iterations",
+            )
 
         final_content = outputs[-1]["content"] if outputs else "No output produced."
         result = {
