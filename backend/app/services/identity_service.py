@@ -439,16 +439,29 @@ def _resolve_cache_key(did: str) -> str:
 
 _INSTANCE_ERROR_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["error", "message", "next_steps"],
+    "required": ["error_code", "detail"],
     "properties": {
-        "error": {"type": "string", "description": "Short machine-readable error code."},
-        "message": {"type": "string", "description": "Human-readable explanation."},
-        "next_steps": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Actionable suggestions for recovering from this error.",
+        "error_code": {
+            "type": "string",
+            "description": "Stable machine-readable error code (e.g. VALIDATION_ERROR, NOT_FOUND).",
         },
-        "correlation_id": {"type": "string"},
+        "detail": {
+            "type": "string",
+            "description": "Human-readable explanation of what went wrong.",
+        },
+        "next_steps": {
+            "type": "string",
+            "description": "Plain-language guidance telling the caller how to recover.",
+        },
+        "correlation_id": {
+            "type": "string",
+            "description": "Request correlation ID for log correlation.",
+        },
+        "errors": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": "Present on VALIDATION_ERROR — per-field Pydantic error descriptors.",
+        },
     },
 }
 
@@ -459,9 +472,10 @@ _INSTANCE_EXAMPLE_REQUESTS: list[dict[str, Any]] = [
         "method": "POST",
         "path": "/api/v1/workflows/submit",
         "body": {
-            "task": "Plan a dinner for 6 with vegetarian options.",
+            "instruction": "Plan a dinner for 6 with vegetarian options.",
+            "budget": 500,
             "domain": "general",
-            "budget_usd": 1.0,
+            "priority": 5,
         },
     },
     {"name": "poll_status", "method": "GET", "path": "/api/v1/workflows/{workflow_id}/status"},
@@ -470,7 +484,7 @@ _INSTANCE_EXAMPLE_REQUESTS: list[dict[str, Any]] = [
         "name": "query_memory",
         "method": "POST",
         "path": "/api/v1/memory/query",
-        "body": {"query": "what is the deadline", "k": 10},
+        "body": {"query": "what is the deadline", "top_k": 10, "min_similarity": 0.5},
     },
     {
         "name": "resolve_did",

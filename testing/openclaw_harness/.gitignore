@@ -1,0 +1,6 @@
+state.db
+state.db-journal
+cycles.log
+escalations/
+*.pid
+harness.log

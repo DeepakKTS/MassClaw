@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openclaw-harness"
+version = "0.1.0"
+description = "State + telemetry server for MassClaw's OpenClaw hardening lab. No LLM calls; LLM work rides the parent Claude Code session."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.34,<1.0",
+    "httpx>=0.28,<1.0",
+    "aiosqlite>=0.20,<1.0",
+    "pydantic>=2.10,<3.0",
+    "websockets>=15.0,<16.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["harness*"]

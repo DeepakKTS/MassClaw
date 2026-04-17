@@ -1,4 +1,4 @@
-.PHONY: dev test migrate seed lint format docker-up docker-down backend frontend celery help federation-up federation-down federation-test federation-summary
+.PHONY: dev test migrate seed lint format docker-up docker-down backend frontend celery help federation-up federation-down federation-test federation-summary fed-native-up fed-native-down fed-native-purge harness-up harness-down harness-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -82,6 +82,26 @@ federation-test: ## Run the full partition/heal/converge scenario and assert con
 
 federation-summary: ## Show each node's Merkle root + record count
 	./scripts/demo_summary.sh
+
+# Native 3-node federation (no Docker — uses Homebrew Postgres 17 + Redis)
+fed-native-up: ## Bring up 3-node federation as native processes (no Docker)
+	./scripts/dev_federation_up.sh
+
+fed-native-down: ## Stop native federation
+	./scripts/dev_federation_down.sh
+
+fed-native-purge: ## Stop native federation AND drop databases
+	./scripts/dev_federation_down.sh --purge
+
+# OpenClaw hardening harness (local, zero-cost)
+harness-up: ## Start harness server on :19000
+	$(MAKE) -C testing/openclaw_harness harness-up
+
+harness-down: ## Stop harness server
+	$(MAKE) -C testing/openclaw_harness harness-down
+
+harness-status: ## Show harness status
+	$(MAKE) -C testing/openclaw_harness harness-status
 
 # Cleanup
 clean: ## Remove build artifacts and caches
