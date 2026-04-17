@@ -144,8 +144,6 @@ class StrategyRouter:
         workflow.started_at = datetime.now(UTC)
         await self.session.flush()
 
-        from decimal import Decimal
-
         from app.llm.token_counter import tokens_to_credits
 
         outputs: list[dict[str, str]] = []

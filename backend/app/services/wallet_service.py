@@ -433,9 +433,7 @@ class WalletService:
         self.session.add(event)
 
         await self.session.execute(
-            update(Workflow)
-            .where(Workflow.workflow_id == workflow_id)
-            .values(budget_used=Decimal(str(new_balance)))
+            update(Workflow).where(Workflow.workflow_id == workflow_id).values(budget_used=Decimal(str(new_balance)))
         )
         await self.session.flush()
         await self.session.refresh(event)

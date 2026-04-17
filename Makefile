@@ -70,6 +70,17 @@ format: ## Format code
 typecheck: ## Run type checker
 	cd backend && mypy app/
 
+# Local CI mirror — EXACT same checks as .github/workflows/ci.yml runs.
+# Run this before every push to avoid red CI. It fails on the FIRST
+# problem so you see what CI will see.
+ci-local: ## Run the exact CI checks locally (lint + format-check + tests)
+	@echo "=== Backend: ruff check ===" && cd backend && ruff check app/
+	@echo "=== Backend: ruff format --check ===" && cd backend && ruff format --check app/
+	@echo "=== Backend: pytest (unit + integration) ===" && cd backend && pytest tests/unit/ tests/integration/ -q --tb=short
+	@echo "=== Frontend: tsc ===" && cd frontend && npx tsc --noEmit
+	@echo "=== Frontend: lint ===" && cd frontend && npm run lint
+	@echo "All CI checks passed locally. Safe to push."
+
 # Federation demo (3-node CRDT convergence scenario — the GATING Phase 1 proof)
 federation-up: ## Bring up the 3-node federation + seed shared workflow
 	./scripts/demo_up.sh
