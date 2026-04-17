@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { usePendingApprovals, useApproveRequest, useDenyRequest } from "@/hooks/useApprovals";
+import { usePendingApprovals, useApproveRequest, useDenyRequest, useApprovalsStream } from "@/hooks/useApprovals";
 import { UserCheck, Clock, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 
 function statusBadge(status: string) {
@@ -214,6 +214,7 @@ function ApprovalCard({ request }: { request: any }) {
 }
 
 export default function ApprovalsPage() {
+  const { live } = useApprovalsStream();
   const { data, isLoading, error } = usePendingApprovals();
   const approvals: any[] = data ?? [];
 
@@ -231,9 +232,17 @@ export default function ApprovalsPage() {
           </p>
         </div>
         <div className="ml-auto">
-          <span className="text-[10px] text-massclaw-text-muted bg-white/5 border border-massclaw-border px-2 py-1 rounded-full">
-            Polling every 3s
-          </span>
+          {live ? (
+            <span className="inline-flex items-center gap-1.5 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Live (SSE)
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 text-[10px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-1 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+              Reconnecting…
+            </span>
+          )}
         </div>
       </div>
 
