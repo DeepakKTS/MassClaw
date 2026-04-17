@@ -66,6 +66,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
     tool_registry = get_tool_registry()
     logger.info("tool_registry_initialized", tools=len(tool_registry.list_tools()))
 
+    # Load Phase-1 built-in policy rules. Importing the package runs
+    # every rule module's @policy_rule decorator so PolicyRegistry is
+    # populated before the first request reaches the scheduler.
+    from app.safety.rules import load_builtin_rules
+
+    loaded_rules = load_builtin_rules()
+    logger.info("policy_rules_loaded", count=len(loaded_rules), rule_ids=list(loaded_rules))
+
     # Optionally register this instance with the NANDA Index. Registration
     # happens in the background so a slow or missing Index never blocks
     # startup — stock agents can still discover us via the well-known URL.
