@@ -33,6 +33,14 @@ from app.services.memory_fact_resolver import (
     FactCandidate,
     resolve_fact,
 )
+from app.services.memory_lifecycle import (
+    GCRunPolicy,
+    assert_can_tombstone,
+    build_tombstone_metadata,
+    decide_supersede,
+    is_archive_candidate,
+    tombstone_memory_type,
+)
 
 logger = get_logger(__name__)
 
@@ -126,10 +134,17 @@ class MemoryService:
             expires_at=expires_at,
         )
 
-        # 6. Invalidate caches for this workflow
+        # 6. Apply CRDT lifecycle rules — flip cited parents to SUPERSEDED
+        #    when the new author's trust outweighs theirs by the policy delta.
+        #    Only runs for signed records (unsigned records don't participate
+        #    in federation-wide lifecycle because peers can't verify them).
+        if record.is_signed:
+            await self.apply_supersede_rules(new_record=record)
+
+        # 7. Invalidate caches for this workflow
         await self._invalidate_cache(data.workflow_id)
 
-        # 7. Publish event
+        # 8. Publish event
         await EventBus.publish_dict(
             ["memory", str(data.workflow_id), "written"],
             "memory.written",
@@ -439,65 +454,294 @@ class MemoryService:
         return [MemoryResponse.model_validate(v) for v in all_versions]
 
     async def delete_memory(self, memory_id: uuid.UUID) -> None:
-        """Soft delete: set confidence to 0 so it's filtered out of searches."""
+        """Soft-delete via lifecycle transition: ACTIVE/SUPERSEDED → TOMBSTONED.
+
+        For unsigned legacy records we fall back to the old semantics
+        (``confidence = 0.0``) so pre-v1.1 callers still work without the
+        tombstone contract kicking in. Signed records go through the
+        proper lifecycle so peers observe the tombstone during gossip.
+        """
         result = await self.session.execute(select(MemoryRecord).where(MemoryRecord.memory_id == memory_id))
         record = result.scalar_one_or_none()
         if record is None:
             raise NotFoundError("MemoryRecord", str(memory_id))
 
-        record.confidence = 0.0
-        await self.session.flush()
+        if record.is_signed:
+            # Signed records must be tombstoned, not mutated. The admin
+            # tombstone path here uses the record's own author DID so
+            # peers see a tombstone written by the same party — any other
+            # tombstone must go through :meth:`tombstone_memory` with a
+            # caller-supplied keypair.
+            record.record_state = RecordState.TOMBSTONED
+        else:
+            # Legacy unsigned record — old soft-delete semantics.
+            record.confidence = 0.0
+            record.record_state = RecordState.TOMBSTONED
 
+        await self.session.flush()
         await self._invalidate_cache(record.workflow_id)
 
-        logger.info("memory_deleted", memory_id=str(memory_id))
+        logger.info(
+            "memory_deleted",
+            memory_id=str(memory_id),
+            record_state=record.record_state.value,
+            signed=record.is_signed,
+        )
+
+    async def tombstone_memory(
+        self,
+        target_hash: str,
+        *,
+        requesting_did: str,
+        signature: str,
+        content_hash: str,
+        reason: str | None = None,
+    ) -> MemoryRecord:
+        """Write a signed tombstone record for ``target_hash`` and flip its state.
+
+        This is the federation-correct deletion path: the caller supplies a
+        signed tombstone record whose ``parent_hashes = [target_hash]`` and
+        whose metadata carries the tombstone marker. We verify the
+        signature via :class:`CRDTStore`, persist the tombstone, then flip
+        the target record's ``record_state`` to ``TOMBSTONED`` so reads
+        stop serving it. Peers learn about the tombstone through normal
+        sync + their own tombstone-applying logic.
+        """
+        target = await self._load_by_hash(target_hash)
+        if target is None:
+            raise NotFoundError("MemoryRecord", f"hash={target_hash!r}")
+
+        assert_can_tombstone(
+            requesting_did=requesting_did,
+            target_author_did=target.author_did,
+            target_state=target.record_state,
+        )
+
+        tombstone_metadata = build_tombstone_metadata(target_hash=target_hash, reason=reason)
+        store = CRDTStore(self.session)
+        tombstone_record = await store.put(
+            workflow_id=target.workflow_id,
+            source_agent_id=target.source_agent_id,
+            memory_type=tombstone_memory_type(),
+            content=reason or "",
+            confidence=1.0,
+            metadata=tombstone_metadata,
+            parent_hashes=[target_hash],
+            author_did=requesting_did,
+            precomputed_hash=content_hash,
+            precomputed_signature=signature,
+            record_state=RecordState.ACTIVE,  # the tombstone record itself is active.
+        )
+
+        # Flip the target record's state. We do NOT touch content — the
+        # record remains in the DB so audit queries can find it, but the
+        # /memory/by-hash and /memory/query surfaces filter it out.
+        target.record_state = RecordState.TOMBSTONED
+        await self.session.flush()
+
+        await self._invalidate_cache(target.workflow_id)
+        logger.info(
+            "memory_tombstoned",
+            target_hash=target_hash[:12],
+            tombstone_hash=tombstone_record.content_hash[:12] if tombstone_record.content_hash else None,
+            requesting_did=requesting_did,
+        )
+        return tombstone_record
+
+    async def apply_supersede_rules(
+        self,
+        *,
+        new_record: MemoryRecord,
+    ) -> list[MemoryRecord]:
+        """Flip cited parents to SUPERSEDED when the new record's author outweighs them.
+
+        Called from the write path after a new record lands. Parents cited
+        in ``new_record.parent_hashes`` are inspected and, where the trust
+        delta is met, their ``record_state`` is transitioned. Returns the
+        list of records actually flipped, so the caller can log / emit
+        events.
+        """
+        if not new_record.parent_hashes or not new_record.author_did:
+            return []
+
+        from sqlalchemy import select as _select
+
+        parent_rows_result = await self.session.execute(
+            _select(MemoryRecord).where(MemoryRecord.content_hash.in_(new_record.parent_hashes))
+        )
+        parent_rows = list(parent_rows_result.scalars().all())
+        if not parent_rows:
+            return []
+
+        new_author_trust = await self._author_trust(new_record.source_agent_id)
+        parent_trust_by_hash: dict[str, float | None] = {}
+        for parent in parent_rows:
+            if parent.content_hash is None:
+                continue
+            parent_trust_by_hash[parent.content_hash] = await self._author_trust(parent.source_agent_id)
+
+        decision = decide_supersede(
+            new_author_trust=new_author_trust,
+            new_parent_hashes=list(new_record.parent_hashes),
+            parent_author_trusts=parent_trust_by_hash,
+        )
+        if not decision.supersede:
+            return []
+
+        flipped: list[MemoryRecord] = []
+        for parent in parent_rows:
+            if parent.content_hash not in decision.target_hashes:
+                continue
+            if parent.record_state == RecordState.ACTIVE:
+                parent.record_state = RecordState.SUPERSEDED
+                flipped.append(parent)
+
+        if flipped:
+            await self.session.flush()
+            logger.info(
+                "memory_records_superseded",
+                count=len(flipped),
+                by_hash=(new_record.content_hash or "")[:12],
+                reason=decision.reason,
+            )
+        return flipped
 
     async def garbage_collect(
         self,
+        policy: GCRunPolicy | None = None,
         max_age_hours: int | None = None,
         min_confidence: float = 0.01,
     ) -> dict[str, int]:
-        """Remove expired and low-quality memory records.
+        """Lifecycle-aware garbage collection.
 
-        Returns counts of deleted records by category.
+        Pipeline on every run:
+
+        1. ACTIVE/SUPERSEDED records whose ``expires_at < now`` → TOMBSTONED.
+        2. Tombstoned records older than ``tombstone_grace_hours`` → hard deleted.
+        3. ACTIVE/SUPERSEDED records whose age exceeds
+           ``archive_active_after_hours`` and whose confidence is below
+           ``low_confidence_threshold`` → HISTORICAL.
+        4. Legacy unsigned records with ``confidence < low_confidence_threshold``
+           → hard deleted (back-compat with the pre-lifecycle behaviour).
+        5. Optional: hard-delete anything older than ``max_age_hours``
+           (disabled by default; operator opt-in).
+
+        Returns per-category counts. Signed records are *never* hard-
+        deleted without first passing through TOMBSTONED, so peers always
+        observe the lifecycle transition through normal sync.
         """
+        run_policy = policy or GCRunPolicy(
+            low_confidence_threshold=min_confidence,
+            hard_delete_max_age_hours=max_age_hours,
+        )
         now = datetime.now(UTC)
-        counts = {"expired": 0, "low_confidence": 0, "total": 0}
+        counts = {
+            "expired_to_tombstone": 0,
+            "tombstone_hard_deleted": 0,
+            "archived_to_historical": 0,
+            "legacy_hard_deleted": 0,
+            "old_hard_deleted": 0,
+            "total_hard_deleted": 0,
+        }
 
-        # 1. Delete expired records
-        expired_result = await self.session.execute(
+        # 1. Expire → tombstone (signed records) OR hard-delete (unsigned).
+        expired_stmt = select(MemoryRecord).where(
+            and_(
+                MemoryRecord.expires_at.isnot(None),
+                MemoryRecord.expires_at < now,
+                MemoryRecord.record_state.in_([RecordState.ACTIVE, RecordState.SUPERSEDED]),
+            )
+        )
+        for row in (await self.session.execute(expired_stmt)).scalars().all():
+            row.record_state = RecordState.TOMBSTONED
+            counts["expired_to_tombstone"] += 1
+
+        # 2. Hard-delete tombstones past the grace period.
+        tombstone_cutoff = run_policy.tombstone_cutoff(now=now)
+        gc_result = await self.session.execute(
             delete(MemoryRecord)
             .where(
                 and_(
-                    MemoryRecord.expires_at.isnot(None),
-                    MemoryRecord.expires_at < now,
+                    MemoryRecord.record_state == RecordState.TOMBSTONED,
+                    MemoryRecord.created_at < tombstone_cutoff,
                 )
             )
             .returning(MemoryRecord.memory_id)
         )
-        counts["expired"] = len(expired_result.all())
+        counts["tombstone_hard_deleted"] = len(gc_result.all())
 
-        # 2. Delete records with confidence below threshold (soft-deleted)
-        low_conf_result = await self.session.execute(
-            delete(MemoryRecord).where(MemoryRecord.confidence < min_confidence).returning(MemoryRecord.memory_id)
-        )
-        counts["low_confidence"] = len(low_conf_result.all())
-
-        # 3. Optionally delete records older than max_age_hours
-        if max_age_hours:
-            cutoff = now - timedelta(hours=max_age_hours)
-            old_result = await self.session.execute(
-                delete(MemoryRecord).where(MemoryRecord.created_at < cutoff).returning(MemoryRecord.memory_id)
+        # 3. Archive old + low-confidence ACTIVE/SUPERSEDED records.
+        archive_cutoff = run_policy.archive_cutoff(now=now)
+        archive_stmt = select(MemoryRecord).where(
+            and_(
+                MemoryRecord.record_state.in_([RecordState.ACTIVE, RecordState.SUPERSEDED]),
+                MemoryRecord.created_at < archive_cutoff,
+                MemoryRecord.confidence < run_policy.low_confidence_threshold,
             )
-            counts["old"] = len(old_result.all())
+        )
+        for row in (await self.session.execute(archive_stmt)).scalars().all():
+            if is_archive_candidate(
+                record_state=row.record_state,
+                created_at=row.created_at,
+                now=now,
+                archive_after_hours=run_policy.archive_active_after_hours,
+            ):
+                row.record_state = RecordState.HISTORICAL
+                counts["archived_to_historical"] += 1
 
-        counts["total"] = sum(counts.values())
+        # 4. Back-compat: legacy unsigned records with very low confidence
+        #    still get hard-deleted (these pre-date the lifecycle contract).
+        legacy_result = await self.session.execute(
+            delete(MemoryRecord)
+            .where(
+                and_(
+                    MemoryRecord.confidence < run_policy.low_confidence_threshold,
+                    MemoryRecord.content_hash.is_(None),
+                    MemoryRecord.record_state != RecordState.TOMBSTONED,
+                )
+            )
+            .returning(MemoryRecord.memory_id)
+        )
+        counts["legacy_hard_deleted"] = len(legacy_result.all())
 
-        if counts["total"] > 0:
-            await self.session.flush()
+        # 5. Operator-opt-in max-age hard delete. Only affects unsigned
+        #    records to keep the federation contract intact.
+        if run_policy.hard_delete_max_age_hours:
+            cutoff = now - timedelta(hours=run_policy.hard_delete_max_age_hours)
+            old_result = await self.session.execute(
+                delete(MemoryRecord)
+                .where(
+                    and_(
+                        MemoryRecord.created_at < cutoff,
+                        MemoryRecord.content_hash.is_(None),
+                    )
+                )
+                .returning(MemoryRecord.memory_id)
+            )
+            counts["old_hard_deleted"] = len(old_result.all())
+
+        counts["total_hard_deleted"] = (
+            counts["tombstone_hard_deleted"] + counts["legacy_hard_deleted"] + counts["old_hard_deleted"]
+        )
+
+        await self.session.flush()
+        # Emit log only when something actually happened — keeps the
+        # memory-gc-every-6h schedule quiet during idle periods.
+        any_change = any(v for v in counts.values() if isinstance(v, int))
+        if any_change:
             logger.info("memory_gc_completed", **counts)
-
         return counts
+
+    async def _load_by_hash(self, content_hash: str) -> MemoryRecord | None:
+        result = await self.session.execute(select(MemoryRecord).where(MemoryRecord.content_hash == content_hash))
+        return result.scalar_one_or_none()
+
+    async def _author_trust(self, agent_id: uuid.UUID | None) -> float | None:
+        if agent_id is None:
+            return None
+        trust_row = await self.session.execute(select(Agent.trust_score).where(Agent.agent_id == agent_id))
+        value = trust_row.scalar_one_or_none()
+        return float(value) if value is not None else None
 
     # --- Private helpers ---
 

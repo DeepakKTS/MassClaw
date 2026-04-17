@@ -18,7 +18,9 @@ from app.schemas.memory import (
     MemoryResponse,
     MemorySearchResult,
     MemoryWriteRequest,
+    TombstoneRequest,
 )
+from app.services.memory_lifecycle import TombstoneAuthError
 from app.services.memory_service import MemoryService
 
 router = APIRouter()
@@ -113,6 +115,61 @@ async def delete_memory(
 ) -> None:
     """Soft-delete a memory record (sets confidence to 0, excluded from searches)."""
     await service.delete_memory(memory_id)
+
+
+@router.post(
+    "/tombstone",
+    response_model=MemoryResponse,
+    status_code=201,
+    summary="Write a signed tombstone record and mark the target as TOMBSTONED.",
+)
+async def tombstone_memory_record(
+    payload: TombstoneRequest,
+    service: MemoryService = Depends(get_memory_service),
+) -> MemoryResponse:
+    """Federation-correct deletion path.
+
+    The caller signs a tombstone record (a memory row with
+    ``metadata.tombstone = true`` and ``parent_hashes = [target_hash]``)
+    with their instance key. We verify the signature and that the
+    ``author_did`` matches the target record's author, then persist the
+    tombstone and flip the target's ``record_state`` to ``TOMBSTONED``.
+
+    Peers learn about the tombstone through normal CRDT sync — the
+    tombstone record itself shows up in their Merkle summary and they
+    apply the state flip locally when they fetch it.
+
+    **Returns**: the persisted tombstone record.
+
+    **Status codes**:
+    - ``201`` — tombstone accepted.
+    - ``403`` — ``author_did`` does not match the target record's author,
+      or the target is unsigned / already tombstoned
+      (``{error: "tombstone_not_allowed", ...}``).
+    - ``404`` — no record with the given ``target_hash``.
+    - ``400`` — signature or hash doesn't verify against the canonical body.
+    """
+    try:
+        record = await service.tombstone_memory(
+            target_hash=payload.target_hash,
+            requesting_did=payload.author_did,
+            signature=payload.signature,
+            content_hash=payload.content_hash,
+            reason=payload.reason,
+        )
+    except TombstoneAuthError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tombstone_not_allowed",
+                "message": str(exc),
+                "next_steps": [
+                    "Ensure the author_did in your tombstone request matches the target record's author_did.",
+                    "Unsigned legacy records cannot be tombstoned — use the admin GC worker instead.",
+                ],
+            },
+        ) from exc
+    return MemoryResponse.model_validate(record)
 
 
 @router.get(

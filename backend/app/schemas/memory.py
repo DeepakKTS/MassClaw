@@ -154,3 +154,36 @@ class FactResolutionResponse(BaseModel):
     requires_hitl: bool = False
     conflict_detected: bool = False
     reason: str
+
+
+class TombstoneRequest(BaseModel):
+    """Signed tombstone payload — caller must have authored the target record."""
+
+    target_hash: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="Content hash of the record being tombstoned.",
+    )
+    author_did: str = Field(
+        ...,
+        max_length=512,
+        description="DID of the party requesting the tombstone; must match target's author.",
+    )
+    signature: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        description="Ed25519 signature (multibase) over the canonical tombstone body.",
+    )
+    content_hash: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="Multibase content hash of the tombstone record itself.",
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Optional human-readable reason; surfaces in audit queries.",
+    )
