@@ -271,13 +271,47 @@ class WorkflowScheduler:
 
             if nodes_needing_approval:
                 from app.core.redis import get_redis_manager
+                from app.orchestration.checkpoint import CheckpointStore, WorkflowCheckpoint
                 from app.safety.approval import ApprovalManager
+                from app.services.identity_service import get_instance_key_store
 
                 approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
 
                 for node in nodes_needing_approval:
                     task_rec = node_contexts[node.node_id][0]
                     agent = node_contexts[node.node_id][1]
+
+                    # Persist a signed checkpoint BEFORE we block on the
+                    # human. The content hash propagates via CRDT gossip,
+                    # so any federated peer (including a fresh node that
+                    # just took over for a dead originator) can pull the
+                    # state and resume execution once the decision lands.
+                    checkpoint_hash: str | None = None
+                    try:
+                        keypair = get_instance_key_store().instance_keypair()
+                        cp_store = CheckpointStore(session=self.session, keypair=keypair)
+                        cp = WorkflowCheckpoint.from_dag(
+                            workflow_id=workflow.workflow_id,
+                            dag=dag,
+                            reason=f"awaiting_approval: {node.capability}",
+                            current_task_id=node.node_id,
+                            variables={
+                                "capability": node.capability,
+                                "agent": agent.name,
+                            },
+                        )
+                        saved = await cp_store.save(cp)
+                        checkpoint_hash = saved.content_hash
+                    except Exception as exc:
+                        # Checkpoint failures must not block the approval
+                        # flow — fall back to Redis-only behaviour and log.
+                        logger.warning(
+                            "approval_checkpoint_failed",
+                            workflow_id=str(workflow.workflow_id),
+                            node_id=node.node_id,
+                            error=str(exc),
+                        )
+
                     request = await approval_mgr.request_approval(
                         workflow_id=str(workflow.workflow_id),
                         task_id=str(task_rec.task_id),
@@ -291,6 +325,7 @@ class WorkflowScheduler:
                         },
                         policy_rule="high_risk_task",
                         timeout_seconds=300,
+                        checkpoint_hash=checkpoint_hash,
                     )
 
                     # Non-blocking: check if auto-approved by policy, otherwise mark as awaiting
@@ -315,6 +350,7 @@ class WorkflowScheduler:
                             extra={
                                 "approval_id": request.request_id,
                                 "capability": node.capability,
+                                "checkpoint_hash": checkpoint_hash,
                             },
                         )
 

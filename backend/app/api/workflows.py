@@ -395,6 +395,162 @@ async def stream_workflow(workflow_id: uuid.UUID) -> EventSourceResponse:
     return EventSourceResponse(event_generator())
 
 
+class ResumeWorkflowRequest(BaseModel):
+    """Body for ``POST /workflows/{id}/resume`` — cross-node resume primitive."""
+
+    checkpoint_hash: str = Field(..., min_length=1, max_length=200)
+    approval_id: str | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Optional approval request id. When present the endpoint verifies "
+            "the request is in the 'approved' state and that its "
+            "checkpoint_hash matches the body, preventing replay of an "
+            "approval against a different checkpoint."
+        ),
+    )
+
+
+@router.post("/{workflow_id}/resume")
+async def resume_workflow(
+    workflow_id: uuid.UUID,
+    body: ResumeWorkflowRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Restore workflow state from a signed checkpoint and (optionally) re-execute.
+
+    End-to-end story for the federation demo:
+
+    1. Operator on **any** node POSTs here with the checkpoint hash that
+       was attached to the approved HITL request.
+    2. The endpoint validates the approval decision (if given), pulls the
+       checkpoint out of the local CRDT store (which has it because of
+       gossip), and reconciles the Workflow + Task rows so they match
+       the checkpoint's DAG snapshot — creating rows if the workflow
+       originated on a peer we never had the row for.
+    3. A background task re-enters the scheduler to continue execution.
+
+    The response summarises what changed on disk; the actual completion
+    status flows through the usual ``/workflows/{id}/stream`` SSE and
+    ``/workflows/{id}/status`` endpoints.
+    """
+    from fastapi import HTTPException
+
+    from app.core.redis import get_redis_manager
+    from app.orchestration.resume import ResumeError, WorkflowResumer
+    from app.safety.approval import ApprovalManager
+    from app.services.identity_service import get_instance_key_store
+
+    # Optional: verify the approval exists and was actually approved.
+    if body.approval_id:
+        approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
+        try:
+            approval = await approval_mgr.check_status(body.approval_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if approval.status != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail=f"approval {body.approval_id!r} is '{approval.status}', not 'approved'",
+            )
+        if approval.checkpoint_hash and approval.checkpoint_hash != body.checkpoint_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="approval.checkpoint_hash does not match body.checkpoint_hash",
+            )
+
+    keypair = get_instance_key_store().instance_keypair()
+    resumer = WorkflowResumer(session=session, keypair=keypair)
+    try:
+        checkpoint = await resumer.load(body.checkpoint_hash)
+    except ResumeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if checkpoint.workflow_id != workflow_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"checkpoint belongs to workflow {checkpoint.workflow_id}, not {workflow_id} (possible replay attack)"
+            ),
+        )
+
+    outcome = await resumer.restore(checkpoint)
+    await session.commit()
+
+    # Re-enter the scheduler in the background. We can't pass the live
+    # SQLAlchemy session into a background task (it'd be closed by the
+    # time it runs), so the helper opens its own session.
+    background_tasks.add_task(_resume_run_background, str(workflow_id))
+
+    return {
+        "status": "resumed",
+        "outcome": outcome.as_summary(),
+    }
+
+
+async def _resume_run_background(workflow_id: str) -> None:
+    """Re-enter the scheduler for a restored workflow with a fresh session.
+
+    The resumed DAG is rebuilt from the workflow's ``dag_snapshot`` (which
+    :class:`WorkflowResumer` just wrote). Agents are re-selected by
+    capability on the current node — they may differ from the ones that
+    originally executed, which is fine: the whole point of cross-node
+    resume is that execution can migrate to whichever peer is alive.
+    """
+    import asyncio
+
+    from app.core.logging import get_logger
+
+    logger = get_logger("workflow_resume_bg")
+
+    async def _run() -> None:
+        from app.core.redis import get_redis_manager
+        from app.models.workflow import Workflow as WfModel
+        from app.orchestration.agent_selector import AgentSelector
+        from app.orchestration.dag import DAG
+        from app.orchestration.scheduler import WorkflowScheduler
+
+        redis = get_redis_manager().get_cache_client()
+        async with db_session_context() as session:
+            result = await session.execute(select(WfModel).where(WfModel.workflow_id == workflow_id))
+            workflow = result.scalar_one_or_none()
+            if workflow is None or not workflow.dag_snapshot:
+                logger.warning("resume_workflow_row_missing", workflow_id=workflow_id)
+                return
+
+            dag = DAG.from_dict(workflow.dag_snapshot)
+            selector = AgentSelector(session)
+            remaining_budget = max(float(workflow.budget_limit) - float(workflow.budget_used or 0), 0.0)
+            try:
+                agents = await selector.select_agents_for_dag(dag, budget=remaining_budget)
+            except Exception as exc:
+                logger.warning(
+                    "resume_workflow_agent_selection_failed",
+                    workflow_id=workflow_id,
+                    error=str(exc),
+                )
+                return
+
+            workflow.status = WorkflowStatus.RUNNING
+            await session.commit()
+
+            scheduler = WorkflowScheduler(session=session, redis=redis)
+            try:
+                await scheduler.execute_workflow(workflow, dag, agents)
+            except Exception as exc:
+                logger.warning(
+                    "resume_workflow_run_failed",
+                    workflow_id=workflow_id,
+                    error=str(exc),
+                )
+
+    try:
+        await asyncio.wait_for(_run(), timeout=MAX_WORKFLOW_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning("resume_workflow_timeout", workflow_id=workflow_id)
+
+
 @router.get("/{workflow_id}/reasoning")
 async def get_reasoning_traces(
     workflow_id: uuid.UUID,

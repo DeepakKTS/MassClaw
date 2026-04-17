@@ -48,6 +48,12 @@ class ApprovalRequest(BaseModel):
     decided_at: str | None = None
     decided_by: str | None = None
     expires_at: str = Field(default_factory=lambda: (datetime.now(UTC) + timedelta(seconds=300)).isoformat())
+    # Content hash of the signed WorkflowCheckpoint persisted at request time.
+    # Any federated peer that has the hash can pull the checkpoint via the
+    # CRDT store and resume the workflow — that's the Day-13 cross-node
+    # resume primitive. ``None`` means no checkpoint was written (e.g. for
+    # legacy approval flows that predate checkpointing).
+    checkpoint_hash: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +96,7 @@ class ApprovalManager:
         context: dict[str, Any],
         policy_rule: str,
         timeout_seconds: int = 300,
+        checkpoint_hash: str | None = None,
     ) -> ApprovalRequest:
         """Create a new approval request and persist it to Redis.
 
@@ -126,6 +133,7 @@ class ApprovalManager:
             status="pending",
             requested_at=now.isoformat(),
             expires_at=expires_at.isoformat(),
+            checkpoint_hash=checkpoint_hash,
         )
 
         key = self._key(request.request_id)
@@ -156,6 +164,7 @@ class ApprovalManager:
                 "task_id": task_id,
                 "action": action,
                 "policy_rule": policy_rule,
+                "checkpoint_hash": checkpoint_hash,
             },
         )
 
@@ -399,6 +408,7 @@ class ApprovalManager:
                 "action": request.action,
                 "decided_by": decided_by,
                 "reason": reason,
+                "checkpoint_hash": request.checkpoint_hash,
             },
         )
 
