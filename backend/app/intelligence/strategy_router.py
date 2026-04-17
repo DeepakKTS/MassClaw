@@ -105,7 +105,13 @@ class StrategyRouter:
         from app.orchestration.selector import AgentSelector
 
         workflow.status = WorkflowStatus.DECOMPOSING
-        await self.session.flush()
+        # Commit so /status polls in *other* sessions see the transition
+        # while decomposition runs (it calls the LLM and can take many
+        # seconds). Without the commit the workflow row looks like
+        # "pending" to any concurrent reader until the whole background
+        # task completes, which makes stock agents polling /status
+        # believe MassClaw is stuck.
+        await self.session.commit()
 
         # Get available capabilities
         result = await self.session.execute(select(Agent.capabilities).where(Agent.status.in_(["active", "degraded"])))
@@ -125,7 +131,9 @@ class StrategyRouter:
 
         workflow.domain = detected_domain
         workflow.dag_snapshot = dag.to_dict()
-        await self.session.flush()
+        # Same visibility rationale as above — DAG snapshot landing means
+        # /status can report total_tasks != 0 to the caller. Commit.
+        await self.session.commit()
 
         # Assign agents — use remaining budget, not total
         selector = AgentSelector(self.session)

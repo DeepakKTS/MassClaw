@@ -190,7 +190,13 @@ class WorkflowScheduler:
         workflow.status = WorkflowStatus.RUNNING
         workflow.started_at = datetime.now(UTC)
         workflow.dag_snapshot = dag.to_dict()
-        await self.session.flush()
+        # Commit the RUNNING transition so other sessions (in particular
+        # the /status endpoint and any stock agent polling it) observe
+        # that execution has actually begun. Without this, readers see
+        # "pending" for the entire duration of task execution, which can
+        # be minutes, and have no way to tell apart "queued forever" from
+        # "actively running".
+        await self.session.commit()
 
         await self._publish_progress(workflow, dag, "workflow_started")
 
