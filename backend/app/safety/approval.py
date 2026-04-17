@@ -97,6 +97,7 @@ class ApprovalManager:
         policy_rule: str,
         timeout_seconds: int = 300,
         checkpoint_hash: str | None = None,
+        node_id: str | None = None,
     ) -> ApprovalRequest:
         """Create a new approval request and persist it to Redis.
 
@@ -154,6 +155,11 @@ class ApprovalManager:
             expires_at=request.expires_at,
         )
 
+        # Best-effort federation twin. CRDT gossip lets any peer discover
+        # this pending approval, which is what makes cross-node HITL work.
+        # A failure here must never break the Redis-backed primary path.
+        await _write_federated_request(request, node_id=node_id)
+
         # Broadcast event so dashboards / webhooks can react.
         await EventBus.publish_dict(
             channel_parts=["approval", workflow_id, "requested"],
@@ -165,6 +171,7 @@ class ApprovalManager:
                 "action": action,
                 "policy_rule": policy_rule,
                 "checkpoint_hash": checkpoint_hash,
+                "node_id": node_id,
             },
         )
 
@@ -398,6 +405,10 @@ class ApprovalManager:
             workflow_id=request.workflow_id,
         )
 
+        # Best-effort federation decision twin. Peers see this via gossip
+        # and can resume the workflow even if this node dies afterwards.
+        await _write_federated_decision(request)
+
         await EventBus.publish_dict(
             channel_parts=["approval", request.workflow_id, status],
             event_type=f"approval.{status}",
@@ -433,6 +444,10 @@ class ApprovalManager:
             workflow_id=request.workflow_id,
         )
 
+        # Record the expiry in CRDT so peers reconcile even if this node
+        # is the one that ticked the janitor.
+        await _write_federated_decision(request)
+
         await EventBus.publish_dict(
             channel_parts=["approval", request.workflow_id, "expired"],
             event_type="approval.expired",
@@ -445,3 +460,54 @@ class ApprovalManager:
         )
 
         return request
+
+
+# ---------------------------------------------------------------------------
+# Federation helpers — best-effort CRDT replication of approvals
+# ---------------------------------------------------------------------------
+
+# The approval manager's primary store is Redis, intentionally. The CRDT
+# write below is a secondary twin: it lets federated peers discover
+# pending approvals by gossip and reconcile decisions even when the
+# originator dies. Because CRDT writes need a DB session and can fail
+# (Postgres down, FK not yet seeded, etc.), they are always best-effort.
+# Failure is logged but never bubbles up to the caller.
+
+
+async def _write_federated_request(request: ApprovalRequest, *, node_id: str | None = None) -> None:
+    try:
+        from app.core.database import db_session_context
+        from app.safety.federated_approval import FederatedApprovalStore
+        from app.services.identity_service import get_instance_key_store
+
+        keypair = get_instance_key_store().instance_keypair()
+        async with db_session_context() as session:
+            store = FederatedApprovalStore(session=session, keypair=keypair)
+            await store.write_request(request, node_id=node_id)
+    except Exception as exc:
+        logger.warning(
+            "federated_approval_request_write_failed",
+            request_id=request.request_id,
+            workflow_id=request.workflow_id,
+            error=str(exc),
+        )
+
+
+async def _write_federated_decision(request: ApprovalRequest) -> None:
+    try:
+        from app.core.database import db_session_context
+        from app.safety.federated_approval import FederatedApprovalStore
+        from app.services.identity_service import get_instance_key_store
+
+        keypair = get_instance_key_store().instance_keypair()
+        async with db_session_context() as session:
+            store = FederatedApprovalStore(session=session, keypair=keypair)
+            await store.write_decision(request)
+    except Exception as exc:
+        logger.warning(
+            "federated_approval_decision_write_failed",
+            request_id=request.request_id,
+            workflow_id=request.workflow_id,
+            status=request.status,
+            error=str(exc),
+        )

@@ -126,10 +126,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
         _asyncio.create_task(_register_with_nanda_index())
         logger.info("nanda_index_startup_registration_scheduled")
 
+    # Start the approval janitor — reaps timed-out HITL requests and
+    # transitions orphaned workflows to FAILED. Single background task,
+    # cancelled on shutdown.
+    import asyncio as _asyncio
+
+    from app.safety.approval_janitor import approval_janitor_loop
+
+    approval_janitor_task = _asyncio.create_task(approval_janitor_loop())
+    logger.info("approval_janitor_task_scheduled")
+
     yield
 
     # Shutdown
     logger.info("shutting_down_massclaw")
+
+    approval_janitor_task.cancel()
+    try:
+        await approval_janitor_task
+    except _asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("approval_janitor_shutdown_error", error=str(exc))
 
     # Disconnect MCP servers
     from app.protocols.mcp_registry import get_mcp_manager
