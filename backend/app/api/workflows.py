@@ -457,28 +457,19 @@ async def resume_workflow(
     from app.services.identity_service import get_instance_key_store
 
     # Optional: verify the approval exists and was actually approved.
-    # Redis is the fast path; CRDT is the fallback for two cases:
+    # We reconcile Redis (fast path) with CRDT (gossiped peer state) so
+    # a decision recorded on ANY federation peer is honoured here:
     #   (a) TTL expired on Redis but the signed decision is still in CRDT.
     #   (b) A peer node received + approved this request and only the
     #       federated twin is visible locally.
+    #   (c) Redis still shows 'pending' on this node because the request
+    #       was created here, but a peer has since approved/denied — the
+    #       gossiped decision in CRDT wins over the stale Redis entry.
     if body.approval_id:
+        from app.api.approvals import _merged_approval_status
+
         approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
-        approval = None
-        try:
-            approval = await approval_mgr.check_status(body.approval_id)
-        except ValueError:
-            approval = None
-
-        if approval is None:
-            try:
-                from app.safety.federated_approval import FederatedApprovalStore
-                from app.services.identity_service import get_instance_key_store
-
-                federated_keypair = get_instance_key_store().instance_keypair()
-                federated_store = FederatedApprovalStore(session=session, keypair=federated_keypair)
-                approval = await federated_store.find_by_request_id(body.approval_id)
-            except Exception:
-                approval = None
+        approval = await _merged_approval_status(body.approval_id, approval_mgr, session=session)
 
         if approval is None:
             raise HTTPException(

@@ -73,6 +73,38 @@ async def _hydrate_from_crdt(
         return None
 
 
+async def _merged_approval_status(
+    request_id: str,
+    mgr: ApprovalManager,
+    session: AsyncSession | None = None,
+) -> ApprovalRequest | None:
+    """Return the definitive state of an approval, reconciling Redis + CRDT.
+
+    The approval state machine only moves forward: pending → approved /
+    denied / expired. Any terminal state in CRDT (written locally or
+    gossiped from a peer) is authoritative and must win over a stale
+    ``pending`` entry in this node's Redis. The inverse is not true —
+    CRDT is always at least as current as Redis locally, so we trust
+    it whenever the two disagree about 'decided'.
+    """
+    redis_state: ApprovalRequest | None
+    try:
+        redis_state = await mgr.check_status(request_id)
+    except ValueError:
+        redis_state = None
+
+    crdt_state = await _hydrate_from_crdt(request_id, session=session)
+
+    if redis_state is None:
+        return crdt_state
+    if crdt_state is None:
+        return redis_state
+
+    if redis_state.status == "pending" and crdt_state.status != "pending":
+        return crdt_state
+    return redis_state
+
+
 @router.get("/pending")
 async def list_pending_approvals(
     federated: bool = Query(
@@ -81,22 +113,43 @@ async def list_pending_approvals(
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict[str, Any]]:
-    """List all pending approval requests, optionally including federated peers."""
+    """List all pending approval requests, optionally including federated peers.
+
+    When federated=True (default), Redis's pending set is filtered
+    against the CRDT: if any peer has recorded a decision that's
+    gossiped back, we drop that request from the pending list even
+    if local Redis still thinks it's pending. Keeps cross-node
+    views consistent.
+    """
     mgr = ApprovalManager(get_redis_manager().get_cache_client())
     redis_pending: list[ApprovalRequest] = await mgr.get_pending()
 
     if not federated:
         return [_serialise(p) for p in redis_pending]
 
-    seen = {p.request_id for p in redis_pending}
-    merged = list(redis_pending)
-
+    decided_in_crdt: set[str] = set()
     try:
         store = await _federated_store(session)
         crdt_pending = await store.get_pending()
+        # Any request_id that has a decision record in CRDT but still
+        # shows as pending locally should be suppressed.
+        for req in redis_pending:
+            latest = await store.find_by_request_id(req.request_id)
+            if latest is not None and latest.status != "pending":
+                decided_in_crdt.add(req.request_id)
     except Exception as exc:
         logger.warning("federated_approval_get_pending_failed", error=str(exc))
         crdt_pending = []
+
+    seen: set[str] = set()
+    merged: list[ApprovalRequest] = []
+    for req in redis_pending:
+        if req.request_id in decided_in_crdt:
+            continue
+        if req.request_id in seen:
+            continue
+        seen.add(req.request_id)
+        merged.append(req)
 
     for record in crdt_pending:
         if record.request_id in seen:
@@ -140,18 +193,15 @@ async def get_approval(
 ) -> dict[str, Any]:
     """Get details of an approval request.
 
-    Falls back to the CRDT twin if Redis has forgotten the request
-    (TTL expired) or if the request lives on a federated peer.
+    Reconciles the Redis fast-path with the CRDT twin: if a peer node
+    has recorded a terminal state via gossip, that wins over a stale
+    ``pending`` here. TTL-evicted Redis entries also fall through to
+    the CRDT.
     """
     mgr = ApprovalManager(get_redis_manager().get_cache_client())
-    try:
-        result = await mgr.check_status(request_id)
-    except ValueError:
-        result = await _hydrate_from_crdt(request_id, session=session)
-        if result is None:
-            raise HTTPException(
-                status_code=404, detail=f"Approval request {request_id!r} not found in Redis or CRDT."
-            ) from None
+    result = await _merged_approval_status(request_id, mgr, session=session)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Approval request {request_id!r} not found in Redis or CRDT.")
     return _serialise(result)
 
 

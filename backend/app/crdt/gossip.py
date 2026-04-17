@@ -218,6 +218,47 @@ class GossipService:
                 known.content_hashes.add(row)
         return known
 
+    async def _auto_shadow_workflow(self, workflow_uuid: uuid.UUID, record: PeerRecord) -> bool:
+        """Create a minimal Workflow row so a gossiped record's FK resolves.
+
+        Returns True on success, False if the insert fails (e.g. the row
+        was created concurrently by another gossip round — which is
+        fine; we treat that as success and let the caller re-check).
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models.base import WorkflowStatus
+        from app.models.workflow import Workflow
+
+        # If some other coroutine raced us, just pick up their row.
+        existing = await self._session.execute(
+            select(Workflow.workflow_id).where(Workflow.workflow_id == workflow_uuid)
+        )
+        if existing.scalar_one_or_none() is not None:
+            return True
+
+        shadow = Workflow(
+            workflow_id=workflow_uuid,
+            user_id="federation-gossip",
+            prompt=f"shadow workflow for federated record {record.content_hash[:12]}",
+            status=WorkflowStatus.PAUSED,
+            budget_limit=0.0,
+        )
+        self._session.add(shadow)
+        try:
+            async with self._session.begin_nested():
+                await self._session.flush()
+        except IntegrityError:
+            # Another gossip tick got here first — that's fine.
+            await self._session.rollback()
+            return True
+        logger.info(
+            "gossip_auto_shadow_workflow_created",
+            workflow_id=str(workflow_uuid),
+            content_hash=record.content_hash[:12],
+        )
+        return True
+
     async def _persist_peer_record(
         self,
         record: PeerRecord,
@@ -236,14 +277,40 @@ class GossipService:
             )
             return False
 
-        if workflow_uuid is None or workflow_uuid not in known.workflow_ids:
+        if workflow_uuid is None:
             report.records_skipped_unknown_workflow += 1
             logger.info(
                 "gossip_record_skipped_unknown_workflow",
                 hash=record.content_hash[:12],
-                workflow_id=str(workflow_uuid) if workflow_uuid else None,
+                workflow_id=None,
             )
             return False
+
+        if workflow_uuid not in known.workflow_ids:
+            # Auto-shadow: create a minimal local Workflow row so the
+            # FK on memory_records resolves and this peer-supplied record
+            # can be persisted. Without this, federated HITL can never
+            # work — the approval + checkpoint twins originate on the
+            # node that ran the scheduler, and peers that didn't see
+            # the initial /workflows/submit would silently drop them.
+            #
+            # The shadow row carries status=PAUSED, zero budget, and a
+            # sentinel user_id. If a human then calls /resume on this
+            # peer, :class:`WorkflowResumer` patches the row with the
+            # checkpoint's DAG snapshot. If no resume ever happens, the
+            # row is benign — it just means we remember the workflow
+            # enough to satisfy FKs.
+            shadow_created = await self._auto_shadow_workflow(workflow_uuid, record)
+            if not shadow_created:
+                report.records_skipped_unknown_workflow += 1
+                logger.info(
+                    "gossip_record_skipped_unknown_workflow",
+                    hash=record.content_hash[:12],
+                    workflow_id=str(workflow_uuid),
+                    reason="auto_shadow_failed",
+                )
+                return False
+            known.workflow_ids.add(workflow_uuid)
 
         if record.content_hash in known.content_hashes:
             report.records_skipped_duplicate += 1
