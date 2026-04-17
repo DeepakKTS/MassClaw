@@ -4,20 +4,50 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse
 
 from app.config import get_settings
 from app.core.database import dispose_db, get_engine, init_db
-from app.core.logging import get_logger, setup_logging
+from app.core.errors import envelope
+from app.core.logging import correlation_id_var, get_logger, setup_logging
 from app.core.redis import dispose_redis, get_redis_manager, init_redis
 from app.embeddings.service import init_embedding_service
+from app.middleware.body_size import BodySizeLimitMiddleware
 from app.middleware.correlation import CorrelationIdMiddleware
 from app.middleware.error_handler import ErrorHandlerMiddleware
 from app.middleware.logging import RequestLoggingMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 
 logger = get_logger(__name__)
+
+
+# Map HTTP status → stable error_code string. Keeps the ``HTTPException``
+# pathway aligned with the ``MassClawError`` vocabulary without
+# forcing every ``raise HTTPException`` site to pass one explicitly.
+_STATUS_ERROR_CODES: dict[int, str] = {
+    400: "BAD_REQUEST",
+    401: "AUTHENTICATION_FAILED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    409: "CONFLICT",
+    413: "PAYLOAD_TOO_LARGE",
+    422: "VALIDATION_ERROR",
+    429: "RATE_LIMITED",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+def _error_code_for_status(status: int) -> str:
+    if status in _STATUS_ERROR_CODES:
+        return _STATUS_ERROR_CODES[status]
+    if status >= 500:
+        return "INTERNAL_ERROR"
+    return f"HTTP_{status}"
 
 
 @asynccontextmanager
@@ -128,6 +158,7 @@ def create_app() -> FastAPI:
 
     # Middleware (outermost first — execution order is bottom-up)
     app.add_middleware(ErrorHandlerMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
@@ -138,6 +169,71 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID"],
     )
+
+    # FastAPI exception handlers — these run BEFORE the middleware
+    # layer sees the response, so they're the place to catch
+    # ``HTTPException`` (which FastAPI raises/catches internally) and
+    # Pydantic validation errors. We normalise both to the standard
+    # envelope shape so stock agents get one predictable error
+    # contract regardless of which layer raised.
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exc_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        headers = dict(exc.headers or {})
+        logger.info(
+            "http_exception",
+            path=request.url.path,
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+        )
+        # Preserve a ``raise HTTPException(detail={"error": ..., ...})``
+        # body so endpoint-specific structured errors survive. The
+        # envelope still wraps it, but the original dict lands under
+        # ``detail`` so existing clients don't break.
+        detail_value = exc.detail
+        if isinstance(detail_value, dict):
+            detail_str = str(detail_value.get("message") or detail_value.get("error") or detail_value)
+            extra = {k: v for k, v in detail_value.items() if k not in {"message", "error"}}
+            content = envelope(
+                error_code=detail_value.get("error") or _error_code_for_status(exc.status_code),
+                detail=detail_str,
+                correlation_id=correlation_id_var.get(),
+                extra=extra or None,
+            )
+            # Preserve the raw dict under `detail` for legacy clients
+            # that parsed the old shape.
+            content["detail"] = detail_value
+        else:
+            content = envelope(
+                error_code=_error_code_for_status(exc.status_code),
+                detail=str(detail_value) if detail_value is not None else "",
+                correlation_id=correlation_id_var.get(),
+            )
+        return JSONResponse(status_code=exc.status_code, content=content, headers=headers)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exc_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [
+            {
+                "loc": list(err.get("loc", [])),
+                "msg": err.get("msg", ""),
+                "type": err.get("type", ""),
+            }
+            for err in exc.errors()
+        ]
+        logger.info(
+            "validation_error",
+            path=request.url.path,
+            count=len(errors),
+        )
+        return JSONResponse(
+            status_code=422,
+            content=envelope(
+                error_code="VALIDATION_ERROR",
+                detail="Request validation failed",
+                correlation_id=correlation_id_var.get(),
+                errors=errors,
+            ),
+        )
 
     # Import and mount API router
     from app.api.router import api_router

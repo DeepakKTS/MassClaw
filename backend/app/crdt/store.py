@@ -142,14 +142,30 @@ class CRDTStore:
             expires_at=expires_at,
         )
 
+        # Pre-check for an existing row with the same hash. Cheaper and
+        # simpler than relying on the unique-constraint collision, and
+        # safe in any transaction state — including mid-test sessions
+        # where a rollback would discard the earlier write along with
+        # the conflicting attempt.
+        if content_hash is not None:
+            existing = await self._fetch_by_hash(content_hash)
+            if existing is not None:
+                return existing
+
         self.session.add(record)
         try:
-            await self.session.flush()
+            # Nested transaction (SAVEPOINT) keeps the surrounding
+            # session usable if another writer races and beats us to
+            # the unique index between the pre-check above and the
+            # flush below. Without this, an IntegrityError here would
+            # roll the outer transaction back too — which is how the
+            # "duplicate-hash inserts collapse to a no-op" invariant
+            # used to break under concurrent writers.
+            async with self.session.begin_nested():
+                await self.session.flush()
         except IntegrityError as exc:
-            # Almost certainly a duplicate content hash — federation writes
-            # may race with local writes that already landed. The row is
-            # immutable and content-addressed, so a duplicate is a no-op.
-            await self.session.rollback()
+            # Concurrent writer got there first. Immutable + content-
+            # addressed → the existing row wins.
             if content_hash is not None:
                 existing = await self._fetch_by_hash(content_hash)
                 if existing is not None:

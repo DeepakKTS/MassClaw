@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     rate_limit_requests: int = 100
     rate_limit_window_seconds: int = 60
 
+    # Request size cap (Day-18 edge hardening). Default 1 MiB; workflow
+    # prompts rarely exceed a few KB, so this is a generous floor that
+    # still rejects obvious DoS payloads without touching legit traffic.
+    max_request_body_bytes: int = 1_048_576
+
     # Celery
     celery_broker_url: str = "redis://localhost:6379/3"
     celery_result_backend: str = "redis://localhost:6379/3"
