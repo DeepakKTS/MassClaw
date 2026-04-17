@@ -424,7 +424,9 @@ class WalletService:
             workflow_id=workflow_id,
             agent_id=agent_id,
             action_type=WalletActionType.DEBIT,
-            debit_delta=Decimal(str(amount)),
+            # DEBIT uses negative credit_delta so SUM over the ledger equals
+            # the (positive) budget_used. Matches charge() convention.
+            credit_delta=Decimal(str(-amount)),
             balance_after=Decimal(str(new_balance)),
             reason=reason,
         )
@@ -454,7 +456,7 @@ class WalletService:
             workflow_id=workflow_id,
             agent_id=None,
             action_type=WalletActionType.DEBIT,
-            debit_delta=Decimal("0"),
+            credit_delta=Decimal("0"),
             balance_after=Decimal("0"),
             reason="noop",
         )
