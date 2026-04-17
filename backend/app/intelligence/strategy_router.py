@@ -98,20 +98,34 @@ class StrategyRouter:
         """Classic DAG decomposition + parallel execution. Delegates to existing orchestration."""
         from sqlalchemy import select
 
+        # Workflow-status transitions persist through a short-lived
+        # satellite session: decouples /status visibility from the main
+        # scheduler's long-running transaction. Writing to this satellite
+        # commits immediately without mutating the main session's
+        # transaction boundary, which was the root cause of the silent
+        # scheduler hangs between task batches (commit inside the main
+        # session left the scheduler's outer loop in a state where
+        # subsequent Agent/Task lookups through the same session stalled).
+        from app.core.database import db_session_context as _sat
         from app.models.agent import Agent
         from app.models.base import WorkflowStatus
         from app.orchestration.decomposer import TaskDecomposer
         from app.orchestration.scheduler import WorkflowScheduler
         from app.orchestration.selector import AgentSelector
 
+        async def _sat_update_workflow_status(new_status: WorkflowStatus, **extra) -> None:
+            from sqlalchemy import update as _sat_update
+
+            async with _sat() as sat_session:
+                stmt = (
+                    _sat_update(type(workflow))
+                    .where(type(workflow).workflow_id == workflow.workflow_id)
+                    .values(status=new_status, **extra)
+                )
+                await sat_session.execute(stmt)
+
         workflow.status = WorkflowStatus.DECOMPOSING
-        # Commit so /status polls in *other* sessions see the transition
-        # while decomposition runs (it calls the LLM and can take many
-        # seconds). Without the commit the workflow row looks like
-        # "pending" to any concurrent reader until the whole background
-        # task completes, which makes stock agents polling /status
-        # believe MassClaw is stuck.
-        await self.session.commit()
+        await _sat_update_workflow_status(WorkflowStatus.DECOMPOSING)
 
         # Get available capabilities
         result = await self.session.execute(select(Agent.capabilities).where(Agent.status.in_(["active", "degraded"])))
@@ -131,9 +145,17 @@ class StrategyRouter:
 
         workflow.domain = detected_domain
         workflow.dag_snapshot = dag.to_dict()
-        # Same visibility rationale as above — DAG snapshot landing means
-        # /status can report total_tasks != 0 to the caller. Commit.
-        await self.session.commit()
+        await self.session.flush()
+        # Publish DAG snapshot through satellite so polling agents see
+        # total_tasks > 0 before task rows are inserted.
+        async with _sat() as sat_session:
+            from sqlalchemy import update as _sat_update
+
+            await sat_session.execute(
+                _sat_update(type(workflow))
+                .where(type(workflow).workflow_id == workflow.workflow_id)
+                .values(domain=detected_domain, dag_snapshot=workflow.dag_snapshot)
+            )
 
         # Assign agents — use remaining budget, not total
         selector = AgentSelector(self.session)

@@ -202,10 +202,45 @@ class WorkflowScheduler:
 
         await self._publish_progress(workflow, dag, "workflow_started")
 
-        # Execution loop
+        # Execution loop with loud failure diagnostics — the outer loop
+        # used to silently hang when anything in a batch threw an
+        # uncaught exception (the workflow stayed in RUNNING for its
+        # 10-minute timeout with zero log output). A bounded try/except
+        # around each iteration turns silent hangs into observable
+        # failures with the actual traceback logged, and marks the
+        # workflow FAILED so /status reflects the real terminal state.
+        iteration_count = 0
+        max_iterations_defensive = max(len(dag.nodes) * 5, 50)
         while not dag.is_complete:
+            iteration_count += 1
+            if iteration_count > max_iterations_defensive:
+                logger.error(
+                    "workflow_scheduler_loop_runaway",
+                    workflow_id=str(workflow.workflow_id),
+                    iterations=iteration_count,
+                    ready=[n.node_id for n in dag.get_ready_nodes()][:5],
+                    completed=dag.completed_count,
+                    failed=dag.failed_count,
+                )
+                workflow.status = WorkflowStatus.FAILED
+                workflow.completed_at = datetime.now(UTC)
+                workflow.result = {
+                    "error": "scheduler_loop_runaway",
+                    "detail": f"Exceeded {max_iterations_defensive} iterations without completing",
+                    "completed": dag.completed_count,
+                    "failed": dag.failed_count,
+                }
+                await self.session.flush()
+                return workflow.result
             ready_nodes = dag.get_ready_nodes()
             if not ready_nodes:
+                logger.warning(
+                    "workflow_scheduler_no_ready_nodes",
+                    workflow_id=str(workflow.workflow_id),
+                    completed=dag.completed_count,
+                    failed=dag.failed_count,
+                    pending_total=len(dag.nodes) - dag.completed_count - dag.failed_count,
+                )
                 break
 
             # Phase 1: Prepare all ready nodes — create Task records, reserve budget, build context
@@ -1110,6 +1145,37 @@ class WorkflowScheduler:
 
         await self._publish_progress(workflow, dag, "task_failed", node=node)
 
+    # Tool-name keywords that, when present in the user prompt, signal
+    # the caller explicitly wants a specific tool to run (not a
+    # hallucinated answer). We inject a strong system-prompt directive
+    # so the LLM reliably picks the named tool instead of defaulting to
+    # file_list / web_search heuristics.
+    _TOOL_BIAS_KEYWORDS = {
+        "code_execute": ("code_execute", "run this python", "execute this", "sandbox"),
+        "web_search": ("web_search", "search the web", "search online"),
+        "web_scrape": ("web_scrape", "scrape this url"),
+        "file_read": ("file_read", "read this file"),
+        "file_write": ("file_write", "write this file"),
+        "api_call": ("api_call", "call this api", "http request"),
+    }
+
+    def _tool_bias_directive(self, user_prompt: str) -> str | None:
+        """If the prompt names a specific tool, return a directive to force it."""
+        lowered = (user_prompt or "").lower()
+        for tool_name, phrases in self._TOOL_BIAS_KEYWORDS.items():
+            if any(phrase in lowered for phrase in phrases):
+                return (
+                    f"\n\n=== TOOL-USE REQUIREMENT ===\n"
+                    f"The user has explicitly asked for the '{tool_name}' tool. "
+                    f"You MUST call it to produce the answer. Do NOT reason the result "
+                    f"from memory, do NOT substitute a different tool, and do NOT emit "
+                    f"fake tool-call XML in your content. If the tool is not in your "
+                    f"available tools list, return an error explaining it is missing — "
+                    f"do not fabricate a result.\n"
+                    f"============================\n"
+                )
+        return None
+
     async def _run_tool_loop(
         self,
         *,
@@ -1132,6 +1198,9 @@ class WorkflowScheduler:
         and the caller marks the node FAILED rather than COMPLETED-with-
         junk.
         """
+        bias = self._tool_bias_directive(user_prompt)
+        if bias:
+            system_prompt = (system_prompt or "") + bias
         from app.tools.base import ToolContext
         from app.tools.executor import ToolExecutor
         from app.tools.registry import get_tool_registry
