@@ -39,8 +39,47 @@ class ExecutionPlan(BaseModel):
 class AdaptivePlanner:
     """Choose execution mode based on goal analysis. Deterministic rules, no LLM calls."""
 
+    # Keywords that signal the caller explicitly wants a tool to run (real
+    # execution, not a hallucinated "here's what the tool would say" answer).
+    # When ANY of these appears in the prompt we force DAG mode so the tool
+    # use system actually triggers — otherwise the planner short-circuits to
+    # DIRECT_RESPONSE and the LLM fabricates tool output.
+    _EXPLICIT_TOOL_KEYWORDS = (
+        "code_execute",
+        "web_search",
+        "web_scrape",
+        "file_read",
+        "file_write",
+        "file_list",
+        "api_call",
+        "use the tool",
+        "use a tool",
+        "run this",
+        "execute this",
+        "sandbox",
+        "do not answer from memory",
+        "do not answer directly",
+    )
+
     def plan(self, goal: StructuredGoal, budget: float) -> ExecutionPlan:
         """Select execution mode based on goal properties."""
+
+        # Rule 0: Prompt explicitly names a MassClaw tool or demands real
+        # execution → force DAG pipeline so the tool use system dispatches
+        # the actual tool instead of the synthesizer guessing.
+        prompt_lower = (goal.original_prompt or "").lower()
+        if any(k in prompt_lower for k in self._EXPLICIT_TOOL_KEYWORDS):
+            mode = ExecutionMode.DAG_PIPELINE
+            reasoning = "Prompt explicitly requested tool execution → DAG pipeline forced"
+            plan = ExecutionPlan(
+                mode=mode,
+                goal=goal,
+                max_iterations=1,
+                confidence_threshold=0.7,
+                reasoning=reasoning,
+            )
+            logger.info("plan_selected", mode=mode.value, reasoning=reasoning)
+            return plan
 
         # Rule 1: Simple questions → direct LLM response (no DAG)
         if goal.complexity_estimate == "simple" and goal.risk_level == "low":

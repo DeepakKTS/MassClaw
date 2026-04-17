@@ -305,26 +305,36 @@ class WorkflowScheduler:
                     agent = node_contexts[node.node_id][1]
 
                     # Persist a signed checkpoint BEFORE we block on the
-                    # human. The content hash propagates via CRDT gossip,
-                    # so any federated peer (including a fresh node that
-                    # just took over for a dead originator) can pull the
+                    # human. Must use a SEPARATE autocommit session so the
+                    # record is durable + visible to the /resume endpoint
+                    # (which runs in its own session) before we go to sleep
+                    # waiting for the human. Using self.session here would
+                    # leave the checkpoint in an uncommitted transaction
+                    # for the duration of the approval wait — any resume
+                    # attempt from another connection would 404.
+                    #
+                    # The content hash propagates via CRDT gossip once
+                    # committed, so any federated peer can also pull the
                     # state and resume execution once the decision lands.
                     checkpoint_hash: str | None = None
                     try:
                         keypair = get_instance_key_store().instance_keypair()
-                        cp_store = CheckpointStore(session=self.session, keypair=keypair)
-                        cp = WorkflowCheckpoint.from_dag(
-                            workflow_id=workflow.workflow_id,
-                            dag=dag,
-                            reason=f"awaiting_approval: {node.capability}",
-                            current_task_id=node.node_id,
-                            variables={
-                                "capability": node.capability,
-                                "agent": agent.name,
-                            },
-                        )
-                        saved = await cp_store.save(cp)
-                        checkpoint_hash = saved.content_hash
+                        from app.core.database import db_session_context as _cp_session_ctx
+
+                        async with _cp_session_ctx() as cp_session:
+                            cp_store = CheckpointStore(session=cp_session, keypair=keypair)
+                            cp = WorkflowCheckpoint.from_dag(
+                                workflow_id=workflow.workflow_id,
+                                dag=dag,
+                                reason=f"awaiting_approval: {node.capability}",
+                                current_task_id=node.node_id,
+                                variables={
+                                    "capability": node.capability,
+                                    "agent": agent.name,
+                                },
+                            )
+                            saved = await cp_store.save(cp)
+                            checkpoint_hash = saved.content_hash
                     except Exception as exc:
                         # Checkpoint failures must not block the approval
                         # flow — fall back to Redis-only behaviour and log.
@@ -360,10 +370,16 @@ class WorkflowScheduler:
                     if decision and decision.status == "pending":
                         task_rec.status = TaskStatus.AWAITING_APPROVAL
                         task_rec.error_message = f"Awaiting human approval (request: {request.request_id})"
-                        await self.session.flush()
 
-                        workflow.status = WorkflowStatus.PAUSED
-                        await self.session.flush()
+                        # AWAITING_APPROVAL is the publicly-visible workflow
+                        # state while a human reviewer decides. Commit so
+                        # the status is visible to the /status endpoint
+                        # running in a separate session — otherwise the
+                        # stock agent polling status would never see the
+                        # state and could not even know it needs to
+                        # approve the request.
+                        workflow.status = WorkflowStatus.AWAITING_APPROVAL
+                        await self.session.commit()
 
                         await self._publish_progress(
                             workflow,
@@ -381,7 +397,7 @@ class WorkflowScheduler:
                         final = await approval_mgr.wait_for_decision(request.request_id, timeout=300)
 
                         workflow.status = WorkflowStatus.RUNNING
-                        await self.session.flush()
+                        await self.session.commit()
 
                         if final and final.status == "denied":
                             dag.mark_failed(node.node_id, error=f"Denied by human: {final.decided_by or 'reviewer'}")
