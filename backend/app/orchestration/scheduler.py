@@ -269,6 +269,19 @@ class WorkflowScheduler:
             active_nodes = [n for n in ready_nodes if n.node_id in node_contexts]
             nodes_needing_approval = [n for n in active_nodes if n.capability in APPROVAL_REQUIRED_CAPABILITIES]
 
+            # Policy engine evaluation runs first. A DENY removes the
+            # node from the active set; an ESCALATE_HUMAN routes it
+            # through the same approval gate as the hardcoded
+            # high-risk capabilities. Until Day-16 rules land, the
+            # registry is empty and every call aggregates to ABSTAIN,
+            # i.e. this block is a no-op at runtime.
+            policy_escalated_nodes = await self._policy_evaluate_nodes(
+                workflow=workflow, active_nodes=active_nodes, node_contexts=node_contexts
+            )
+            for node in policy_escalated_nodes:
+                if node not in nodes_needing_approval:
+                    nodes_needing_approval.append(node)
+
             if nodes_needing_approval:
                 from app.core.redis import get_redis_manager
                 from app.orchestration.checkpoint import CheckpointStore, WorkflowCheckpoint
@@ -779,6 +792,84 @@ class WorkflowScheduler:
         shutil.rmtree(workspace, ignore_errors=True)
 
         return final_result
+
+    async def _policy_evaluate_nodes(
+        self,
+        *,
+        workflow: Workflow,
+        active_nodes: list[DAGNode],
+        node_contexts: dict[str, tuple[Task, Agent, dict]],
+    ) -> list[DAGNode]:
+        """Run the policy registry for each node, return those that need HITL.
+
+        Side effects:
+        - Nodes whose aggregated decision is ``DENY`` are marked
+          :class:`TaskStatus.SKIPPED`, removed from ``node_contexts``,
+          and their reason is copied onto ``task.error_message``.
+        - Nodes whose decision is ``ESCALATE_HUMAN`` are returned so
+          the caller can feed them into the approval gate.
+        - ``ALLOW`` and ``ABSTAIN`` are no-ops: the scheduler proceeds.
+        """
+        from app.safety.context import PolicyContext
+        from app.safety.decision import DecisionAction
+        from app.safety.registry import PolicyRegistry
+        from app.safety.registry import evaluate as policy_evaluate
+
+        # Fast path: nothing registered → skip the overhead entirely.
+        if not PolicyRegistry.all():
+            return []
+
+        escalated: list[DAGNode] = []
+        for node in active_nodes:
+            task_rec, agent, _ = node_contexts[node.node_id]
+            ctx = PolicyContext(
+                agent_did=None,
+                agent_trust_score=float(agent.trust_score) if agent is not None else None,
+                agent_capabilities=tuple(agent.capabilities or ()),
+                agent_id=agent.agent_id if agent is not None else None,
+                action=f"execute_{node.capability}",
+                action_category=node.capability,
+                tool_name=None,
+                workflow_id=workflow.workflow_id,
+                task_id=task_rec.task_id,
+                session=self.session,
+                redis=self.redis,
+                extra={"description": node.description},
+            )
+            try:
+                decision = await policy_evaluate(ctx)
+            except Exception as exc:
+                logger.warning(
+                    "policy_evaluation_failed",
+                    workflow_id=str(workflow.workflow_id),
+                    node_id=node.node_id,
+                    error=str(exc),
+                )
+                continue
+
+            if decision.action is DecisionAction.DENY:
+                logger.info(
+                    "policy_denied_task",
+                    workflow_id=str(workflow.workflow_id),
+                    node_id=node.node_id,
+                    rule_id=decision.rule_id,
+                    reason=decision.reason,
+                )
+                task_rec.status = TaskStatus.SKIPPED
+                task_rec.error_message = f"Policy denied ({decision.rule_id}): {decision.reason}"
+                await self.session.flush()
+                node_contexts.pop(node.node_id, None)
+            elif decision.action is DecisionAction.ESCALATE_HUMAN:
+                logger.info(
+                    "policy_escalated_task",
+                    workflow_id=str(workflow.workflow_id),
+                    node_id=node.node_id,
+                    rule_id=decision.rule_id,
+                    reason=decision.reason,
+                )
+                escalated.append(node)
+
+        return escalated
 
     async def _reflect_on_task(
         self,
