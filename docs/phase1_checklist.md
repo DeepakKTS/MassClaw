@@ -55,10 +55,17 @@ Everything below must be "done" before the Phase-1 deadline (2026-05-07). Tracks
 - [x] All unbounded DB GC loops capped with `LIMIT 10_000` per tick
 - [x] Broad `except Exception` in approval endpoints replaced with specific error mapping
 - [x] Pydantic bounds on every new request body (min/max length, ge/le, gt=0 on budgets)
+- [x] Scheduler tool-loop exhaustion forces `tools=None` summary call (Day 22)
+- [x] Task rows upserted by `node.task_id` — no duplicate rows on outer-loop re-entry (Day 22)
+- [x] `reserve_budget` carries per-node idempotency key (Day 22)
+- [x] Low-confidence-review approval fires once per task attempt (Day 22)
+- [x] `memory_records.workflow_id` nullable so cross-workflow semantic cache works (Day 22)
+- [x] Wallet balance endpoint reconciles ledger with `Workflow.budget_used` (Day 22)
+- [x] `KeyStore` fallback to `~/.massclaw` when `/var/lib/massclaw` not writable (Day 22)
 
 ## Backend — tests
 
-- [x] 615 unit + integration tests passing
+- [x] 622 unit + integration tests passing
 - [x] `test_orchestration_checkpoint.py` — 14 tests on the serialisation surface
 - [x] `test_orchestration_resume.py` — 5 tests on cross-node resume
 - [x] `test_scheduler_reflection_branches.py` — 6 tests, one per reflection action
@@ -66,6 +73,7 @@ Everything below must be "done" before the Phase-1 deadline (2026-05-07). Tracks
 - [x] `test_policy_decision.py` + `test_policy_registry.py` + `test_policy_builtin_rules.py` — 70 policy tests
 - [x] `test_policy_registry_api.py` + `test_policy_audit.py` — 16 API-level tests
 - [x] `test_edge_cases.py` — 14 hardening tests (malformed JSON, invalid UUID, oversized, unicode, 404, 405, 413, 429 envelope)
+- [x] `test_scheduler_tool_loop.py` — 6 tests (tool-loop exhaustion, Task upsert, reserve idempotency, review flag reset)
 - [x] E2E federation convergence test behind `@pytest.mark.e2e`
 
 ## Frontend

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -208,14 +209,19 @@ class WorkflowScheduler:
                     dag.mark_failed(node.node_id, error="No agent assigned")
                     continue
 
-                # Pre-execution budget check — fail fast before wasting LLM calls
+                # Pre-execution budget check — fail fast before wasting LLM calls.
+                # idempotency_key scoped to (workflow, node) so outer-loop
+                # re-entries after a retry don't burn budget on duplicate
+                # RESERVE events (Fix C — Day 22).
                 estimated_cost = self._estimate_node_cost(agent)
+                reserve_key = f"{workflow.workflow_id}:{node.node_id}:reserve"
                 try:
                     reservation = await self.wallet_service.reserve_budget(
                         workflow_id=workflow.workflow_id,
                         agent_id=agent.agent_id,
                         estimated_cost=estimated_cost,
                         reason=f"Task {node.node_id}: {node.capability}",
+                        idempotency_key=reserve_key,
                     )
                     reservations[node.node_id] = reservation
                 except BudgetExhaustedError:
@@ -223,40 +229,44 @@ class WorkflowScheduler:
                         node.node_id,
                         error=f"Budget insufficient for {node.capability}: need ~{estimated_cost:.1f} cr",
                     )
-                    # Create a task record so the UI shows it as failed
-                    failed_task = Task(
+                    # Fix B — Day 22: upsert the task row by node.task_id so
+                    # budget-exhausted retries don't stamp duplicate FAILED
+                    # rows per (workflow_id, node_id).
+                    step_number = int("".join(c for c in node.node_id if c.isdigit()) or "0")
+                    failed_task = await self._upsert_task_row(
+                        node=node,
                         workflow_id=workflow.workflow_id,
-                        assigned_agent_id=agent.agent_id,
-                        step_number=int("".join(c for c in node.node_id if c.isdigit()) or "0"),
-                        capability=node.capability,
-                        description=node.description,
+                        agent_id=agent.agent_id,
+                        step_number=step_number,
                         status=TaskStatus.FAILED,
                         error_message=f"Budget insufficient: need ~{estimated_cost:.1f} cr",
                     )
-                    self.session.add(failed_task)
-                    await self.session.flush()
                     logger.warning(
                         "task_budget_insufficient",
                         node_id=node.node_id,
                         capability=node.capability,
                         estimated_cost=estimated_cost,
+                        task_id=str(failed_task.task_id),
                     )
                     continue
 
                 dag.mark_running(node.node_id)
 
-                task = Task(
+                # Fix B — Day 22: re-use the existing Task row whenever the
+                # outer scheduler loop re-enters this node (e.g. after a
+                # retry_task reflection branch called dag.mark_pending).
+                # Without this, every tick of the while-not-is_complete loop
+                # creates a fresh Task row, producing 40+ duplicates for a
+                # 5-node DAG when the tool-loop can't converge.
+                step_number = int("".join(c for c in node.node_id if c.isdigit()) or "0")
+                task = await self._upsert_task_row(
+                    node=node,
                     workflow_id=workflow.workflow_id,
-                    assigned_agent_id=agent.agent_id,
-                    step_number=int("".join(c for c in node.node_id if c.isdigit()) or "0"),
-                    capability=node.capability,
-                    description=node.description,
+                    agent_id=agent.agent_id,
+                    step_number=step_number,
                     status=TaskStatus.RUNNING,
+                    error_message=None,
                 )
-                self.session.add(task)
-                await self.session.flush()
-                await self.session.refresh(task)
-                node.task_id = task.task_id
 
                 # Build context from shared memory (DB read)
                 context = await self._build_context(workflow, node, dag)
@@ -437,84 +447,18 @@ class WorkflowScheduler:
                     logger.info("cache_hit", capability=node.capability, node_id=node.node_id)
                     return node, cached_result
 
-                # Resolve tools for this agent's capabilities
-                from app.tools.base import ToolContext
-                from app.tools.executor import ToolExecutor
-                from app.tools.registry import get_tool_registry
-
-                registry = get_tool_registry()
-                agent_caps = agent.capabilities if isinstance(agent.capabilities, list) else []
-                available_tools = registry.get_tools_for_capabilities(agent_caps)
-                tool_schemas = [t.to_schema() for t in available_tools] if available_tools else None
-
-                settings = get_settings()
-                max_iterations = settings.tool_max_iterations
-                all_tool_calls: list[dict] = []
-                current_prompt = user_prompt
-                total_cost = Decimal("0")
-
-                for iteration in range(max_iterations):
-                    try:
-                        resp = await self.model_router.generate(
-                            prompt=current_prompt,
-                            system=system_prompt,
-                            model=model,
-                            max_tokens=max_tok,
-                            temperature=0.4,
-                            tools=tool_schemas,
-                        )
-                        total_cost += resp.cost
-                    except Exception as e:
-                        return node, e
-
-                    # No tool calls — final response
-                    if not resp.tool_calls:
-                        resp.cost = total_cost
-                        if all_tool_calls:
-                            resp.metadata["tool_calls"] = all_tool_calls
-                            resp.metadata["tool_iterations"] = iteration + 1
-                        await self._store_in_cache(node, user_prompt, resp)
-                        return node, resp
-
-                    # Execute tool calls
-                    tool_executor = ToolExecutor(session=self.session, redis=self.redis)
-                    tool_context_obj = ToolContext(
-                        workflow_id=workflow.workflow_id,
-                        agent_id=agent.agent_id,
-                        workspace_path=f"{settings.tool_workspace_base}/{workflow.workflow_id}",
+                try:
+                    resp = await self._run_tool_loop(
+                        node=node,
+                        agent=agent,
+                        workflow=workflow,
+                        user_prompt=user_prompt,
+                        system_prompt=system_prompt,
+                        model=model,
+                        max_tok=max_tok,
                     )
-                    tool_results_text = []
-                    for call in resp.tool_calls:
-                        result = await tool_executor.execute_tool(call.name, call.arguments, tool_context_obj)
-                        all_tool_calls.append(
-                            {
-                                "tool": call.name,
-                                "arguments": call.arguments,
-                                "result": result.content[:500],
-                                "success": result.success,
-                            }
-                        )
-                        tool_results_text.append(
-                            f"## Tool Result: {call.name}\nSuccess: {result.success}\n{result.content}\n"
-                        )
-                        total_cost += Decimal(str(result.cost_credits))
-
-                    # Append tool results for next iteration
-                    current_prompt = (
-                        f"{user_prompt}\n\n"
-                        f"## Tool Execution Results (iteration {iteration + 1})\n\n"
-                        + "\n".join(tool_results_text)
-                        + "\n\nContinue your analysis using these tool results. "
-                        "If you need more information, call another tool. "
-                        "Otherwise, provide your final response."
-                    )
-
-                # Max iterations reached — return last response
-                resp.cost = total_cost
-                resp.metadata["tool_calls"] = all_tool_calls
-                resp.metadata["tool_iterations"] = max_iterations
-                resp.metadata["max_iterations_reached"] = True
-                await self._store_in_cache(node, user_prompt, resp)
+                except Exception as e:
+                    return node, e
                 return node, resp
 
             # Recompute active_nodes to exclude any denied/removed nodes from Phase 1.5
@@ -629,9 +573,21 @@ class WorkflowScheduler:
                         except Exception as e:
                             logger.warning("consensus_verification_skipped", error=str(e))
 
-                    # Post-execution review gate for low-confidence outputs
-                    if task_rec.confidence is not None and task_rec.confidence < 0.4:
+                    # Post-execution review gate for low-confidence outputs.
+                    # Fix D — Day 22: fire at most once per task attempt.
+                    # Without this flag, the outer scheduler loop + a
+                    # retry_task reflection branch could re-enter this
+                    # block on every tick and flood the approvals queue
+                    # with thousands of "review_low_confidence_output"
+                    # records for a single node. The flag is cleared in
+                    # the reflection branch when a retry resets the node
+                    # so a fresh low-confidence output can re-trigger.
+                    task_output_map = task_rec.output if isinstance(task_rec.output, dict) else {}
+                    review_already_requested = bool(task_output_map.get("review_requested"))
+                    if task_rec.confidence is not None and task_rec.confidence < 0.4 and not review_already_requested:
                         try:
+                            from sqlalchemy.orm.attributes import flag_modified
+
                             from app.core.redis import get_redis_manager
                             from app.safety.approval import ApprovalManager
 
@@ -650,6 +606,9 @@ class WorkflowScheduler:
                                 policy_rule="low_confidence_review",
                                 timeout_seconds=120,
                             )
+                            task_rec.output = {**task_output_map, "review_requested": True}
+                            flag_modified(task_rec, "output")
+                            await self.session.flush()
                             logger.info(
                                 "low_confidence_review_requested",
                                 node_id=node.node_id,
@@ -964,6 +923,10 @@ class WorkflowScheduler:
                 task_rec.retry_count = retry_count + 1
                 task_rec.status = TaskStatus.PENDING
                 task_rec.output["retry_feedback"] = decision.improved_prompt or ""
+                # Fix D companion — Day 22: clear the review flag so if the
+                # new attempt also produces low confidence the review gate
+                # can fire exactly once more.
+                task_rec.output.pop("review_requested", None)
                 _flag_modified(task_rec, "output")
                 dag.mark_pending(node.node_id)
                 logger.info(
@@ -1088,6 +1051,185 @@ class WorkflowScheduler:
             logger.info("tasks_skipped_dependency", node_id=node.node_id, skipped=skipped)
 
         await self._publish_progress(workflow, dag, "task_failed", node=node)
+
+    async def _run_tool_loop(
+        self,
+        *,
+        node: DAGNode,
+        agent: Agent,
+        workflow: Workflow,
+        user_prompt: str,
+        system_prompt: str,
+        model: str,
+        max_tok: int,
+    ) -> LLMResponse:
+        """Run Claude with tools for up to ``tool_max_iterations`` rounds.
+
+        Fix A — Day 22: extracted from ``execute_workflow`` so the
+        tool-loop-exhaustion path is unit-testable. When the loop hits
+        max iterations with Claude still requesting tools, we force ONE
+        final ``tools=None`` call so the model must synthesise a text
+        answer from the tool results it already has. If that also
+        produces empty content we return a response with ``content=""``
+        and the caller marks the node FAILED rather than COMPLETED-with-
+        junk.
+        """
+        from app.tools.base import ToolContext
+        from app.tools.executor import ToolExecutor
+        from app.tools.registry import get_tool_registry
+
+        registry = get_tool_registry()
+        agent_caps = agent.capabilities if isinstance(agent.capabilities, list) else []
+        available_tools = registry.get_tools_for_capabilities(agent_caps)
+        tool_schemas = [t.to_schema() for t in available_tools] if available_tools else None
+
+        settings = get_settings()
+        max_iterations = settings.tool_max_iterations
+        all_tool_calls: list[dict] = []
+        current_prompt = user_prompt
+        total_cost = Decimal("0")
+        tool_results_text: list[str] = []
+        resp: LLMResponse | None = None
+
+        for iteration in range(max_iterations):
+            resp = await self.model_router.generate(
+                prompt=current_prompt,
+                system=system_prompt,
+                model=model,
+                max_tokens=max_tok,
+                temperature=0.4,
+                tools=tool_schemas,
+            )
+            total_cost += resp.cost
+
+            if not resp.tool_calls:
+                resp.cost = total_cost
+                if all_tool_calls:
+                    resp.metadata["tool_calls"] = all_tool_calls
+                    resp.metadata["tool_iterations"] = iteration + 1
+                await self._store_in_cache(node, user_prompt, resp)
+                return resp
+
+            tool_executor = ToolExecutor(session=self.session, redis=self.redis)
+            tool_context_obj = ToolContext(
+                workflow_id=workflow.workflow_id,
+                agent_id=agent.agent_id,
+                workspace_path=f"{settings.tool_workspace_base}/{workflow.workflow_id}",
+            )
+            tool_results_text = []
+            for call in resp.tool_calls:
+                result = await tool_executor.execute_tool(call.name, call.arguments, tool_context_obj)
+                all_tool_calls.append(
+                    {
+                        "tool": call.name,
+                        "arguments": call.arguments,
+                        "result": result.content[:500],
+                        "success": result.success,
+                    }
+                )
+                tool_results_text.append(f"## Tool Result: {call.name}\nSuccess: {result.success}\n{result.content}\n")
+                total_cost += Decimal(str(result.cost_credits))
+
+            current_prompt = (
+                f"{user_prompt}\n\n"
+                f"## Tool Execution Results (iteration {iteration + 1})\n\n"
+                + "\n".join(tool_results_text)
+                + "\n\nContinue your analysis using these tool results. "
+                "If you need more information, call another tool. "
+                "Otherwise, provide your final response."
+            )
+
+        # Fix A — Day 22: exhaustion fallback. Force a tools=None summary
+        # call so Claude can't keep requesting tools.
+        summary_prompt = (
+            f"{user_prompt}\n\n"
+            f"## Tool Execution Results (all {max_iterations} iterations)\n\n"
+            + "\n".join(tool_results_text)
+            + "\n\nYou have reached the tool-use budget. Do not request any more tools. "
+            "Synthesise your final response from the tool results above. "
+            "If the information is insufficient, say so clearly and stop."
+        )
+        try:
+            summary = await self.model_router.generate(
+                prompt=summary_prompt,
+                system=system_prompt,
+                model=model,
+                max_tokens=max_tok,
+                temperature=0.4,
+                tools=None,
+            )
+            total_cost += summary.cost
+            summary.cost = total_cost
+            summary.metadata["tool_calls"] = all_tool_calls
+            summary.metadata["tool_iterations"] = max_iterations
+            summary.metadata["max_iterations_reached"] = True
+            summary.metadata["summary_forced"] = True
+            if summary.content.strip():
+                await self._store_in_cache(node, user_prompt, summary)
+                return summary
+            resp = summary
+        except Exception as e:
+            logger.warning("tool_loop_summary_call_failed", error=str(e), node_id=node.node_id)
+
+        # Empty summary → return content="" so caller marks node FAILED.
+        assert resp is not None, "tool loop must have produced at least one response"
+        resp.cost = total_cost
+        resp.metadata["tool_calls"] = all_tool_calls
+        resp.metadata["tool_iterations"] = max_iterations
+        resp.metadata["max_iterations_reached"] = True
+        resp.metadata["summary_forced"] = True
+        resp.metadata["summary_empty"] = True
+        resp.content = ""
+        return resp
+
+    async def _upsert_task_row(
+        self,
+        *,
+        node: DAGNode,
+        workflow_id: uuid.UUID,
+        agent_id: uuid.UUID | None,
+        step_number: int,
+        status: TaskStatus,
+        error_message: str | None,
+    ) -> Task:
+        """Re-use the Task row for a node if it already exists; else create.
+
+        The DAG node tracks its task_id after the first creation
+        (``node.task_id``). On retry branches — ``dag.mark_pending()``
+        resets the node but keeps the same ``node.task_id`` — we want to
+        update the existing row rather than stamp a new one. Without
+        this, the outer scheduler loop can stamp 40+ rows for a 5-node
+        DAG when the tool-loop fails to converge.
+
+        Idempotent: calling twice with identical inputs is a no-op
+        beyond setting the requested ``status`` + ``error_message``.
+        """
+        existing: Task | None = None
+        if node.task_id is not None:
+            existing = await self.session.get(Task, node.task_id)
+
+        if existing is not None:
+            existing.status = status
+            existing.error_message = error_message
+            if agent_id is not None:
+                existing.assigned_agent_id = agent_id
+            await self.session.flush()
+            return existing
+
+        task = Task(
+            workflow_id=workflow_id,
+            assigned_agent_id=agent_id,
+            step_number=step_number,
+            capability=node.capability,
+            description=node.description,
+            status=status,
+            error_message=error_message,
+        )
+        self.session.add(task)
+        await self.session.flush()
+        await self.session.refresh(task)
+        node.task_id = task.task_id
+        return task
 
     async def _build_context(self, workflow: Workflow, node: DAGNode, dag: DAG) -> str:
         """Build context from shared memory for an agent task."""

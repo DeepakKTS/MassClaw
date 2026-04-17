@@ -16,7 +16,7 @@ interface BudgetEstimate {
 
 const PRESETS = [
   { label: "Quick", value: 100, icon: Zap, color: "#22d3ee" },
-  { label: "Standard", value: 500, icon: BarChart3, color: "#E08A3E" },
+  { label: "Standard", value: 500, icon: BarChart3, color: "#FF7A1A" },
   { label: "Deep", value: 1500, icon: Brain, color: "#4A8EC2" },
 ] as const;
 
@@ -332,7 +332,7 @@ export function MissionInput() {
                 )}
               </AnimatePresence>
             </button>
-            <div className="h-5 w-px mx-1" style={{ background: "linear-gradient(to bottom, transparent, rgba(224,138,62,0.3), transparent)" }} />
+            <div className="h-5 w-px mx-1" style={{ background: "linear-gradient(to bottom, transparent, rgba(255, 122, 26,0.3), transparent)" }} />
             <div className="relative">
               <button type="button" onMouseEnter={() => setShowTooltip(true)} onMouseLeave={() => setShowTooltip(false)}
                 className="flex items-center justify-center w-8 h-8 rounded-full text-massclaw-text-muted/30 hover:text-massclaw-text-muted/60 transition-colors"><Info size={14} /></button>

@@ -14,11 +14,11 @@
       --border-bright: #323237;
       --text: #F5F5F7;
       --muted: #86868B;
-      --accent: #E08A3E;
-      --accent-light: #F0A85C;
-      --accent-soft: rgba(224, 138, 62, 0.14);
-      --accent-border: rgba(224, 138, 62, 0.35);
-      --accent-gradient: linear-gradient(135deg, #E08A3E 0%, #A66428 100%);
+      --accent: #FF7A1A;
+      --accent-light: #FFA340;
+      --accent-soft: rgba(255, 122, 26, 0.16);
+      --accent-border: rgba(255, 122, 26, 0.45);
+      --accent-gradient: linear-gradient(135deg, #FFA340 0%, #FF5500 100%);
       --success: #30D158;
       --success-soft: rgba(48, 209, 88, 0.10);
       --success-border: rgba(48, 209, 88, 0.35);
@@ -43,7 +43,7 @@
     .wrap { max-width: 1200px; margin: 0 auto; padding: 44px 28px 96px; position: relative; z-index: 1; }
 
     .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
-    .brand .mark { width: 40px; height: 40px; border-radius: 12px; background: var(--accent-gradient); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 700; color: #1a1007; font-size: 16px; letter-spacing: -0.02em; box-shadow: 0 8px 24px rgba(224, 138, 62, 0.25); }
+    .brand .mark { width: 40px; height: 40px; border-radius: 12px; background: var(--accent-gradient); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 700; color: #1a1007; font-size: 16px; letter-spacing: -0.02em; box-shadow: 0 8px 32px rgba(255, 122, 26, 0.45); }
     .brand .title { font-weight: 600; letter-spacing: -0.02em; font-size: 20px; }
     .brand .title span { color: var(--muted); font-weight: 400; margin-left: 6px; }
 
@@ -136,7 +136,7 @@
     /* ── Code ───────────────────────────────────────── */
     pre, code { font-family: var(--mono); font-size: 12px; }
     pre { background: #08080A; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; overflow-x: auto; line-height: 1.55; color: var(--text); margin: 10px 0; }
-    code { background: rgba(224, 138, 62, 0.08); padding: 1px 6px; border-radius: 4px; color: var(--accent-light); }
+    code { background: rgba(255, 122, 26, 0.10); padding: 1px 6px; border-radius: 4px; color: var(--accent-light); }
     pre code { background: transparent; padding: 0; color: inherit; }
 
     /* ── Chips ───────────────────────────────────────── */
@@ -193,9 +193,9 @@
     <div class="verdict">PASS · READY FOR STOCK-AGENT TESTING</div>
   </div>
   <div class="next">
-    <div class="label">Last updated · 2026-04-17 02:45 UTC</div>
-    <strong>Next</strong>: walk the 10-click frontend script (§8),
-    then run the federation demo if Docker is up.
+    <div class="label">Last updated · 2026-04-17 03:45 UTC</div>
+    <strong>Next</strong>: Day 19 stock-agent harness (<code>scripts/stock_agent_harness.py</code>, 5 scenarios).
+    Day-22 scheduler fix shipped — heavy tool-use prompts now complete cleanly.</div>
   </div>
 </div>
 
@@ -291,11 +291,11 @@
   <div class="grid four">
     <div class="card green">
       <h3>Backend tests</h3>
-      <div class="kpi"><span class="value green">616</span><span class="hint">passing · 11.7 s</span></div>
+      <div class="kpi"><span class="value green">622</span><span class="hint">passing · 11.7 s</span></div>
     </div>
     <div class="card green">
       <h3>Targeted files</h3>
-      <div class="kpi"><span class="value green">139</span><span class="hint">across 11 files</span></div>
+      <div class="kpi"><span class="value green">145</span><span class="hint">across 12 files</span></div>
     </div>
     <div class="card green">
       <h3>Manual API</h3>
@@ -586,6 +586,7 @@ curl -s -X DELETE $B/api/v1/policy/registry/rules | jq .error_code     # "METHOD
     <div class="row"><span class="name"><strong>test_policy_registry_api.py</strong> — 9 tests (integration)</span><span class="status green"><span class="dot green"></span>PASS</span></div>
     <div class="row"><span class="name"><strong>test_policy_audit.py</strong> — 7 tests (integration)</span><span class="status green"><span class="dot green"></span>PASS</span></div>
     <div class="row"><span class="name"><strong>test_edge_cases.py</strong> — 14 tests (integration)</span><span class="status green"><span class="dot green"></span>PASS</span></div>
+    <div class="row"><span class="name"><strong>test_scheduler_tool_loop.py</strong> — 6 tests (integration, new Day 22)</span><span class="status green"><span class="dot green"></span>PASS</span></div>
   </div>
 </section>
 
@@ -682,7 +683,7 @@ curl -s -X DELETE $B/api/v1/policy/registry/rules | jq .error_code     # "METHOD
 
 <!-- ============================================================ 11. FIXES -->
 <section id="fixes">
-  <div class="section-head"><h2><span class="num">11</span>Fixed this session · 2026-04-17</h2></div>
+  <div class="section-head"><h2><span class="num">11</span>Fixed this session · 2026-04-17 (late night Day 22)</h2></div>
   <div class="card">
     <div class="row">
       <span class="body"><span class="title">KeyStore default path unreachable on dev boxes</span><span class="sub">every signing endpoint returned 500 · now falls back to <code>~/.massclaw</code> when <code>/var/lib/massclaw</code> is root-only</span></span>
@@ -694,6 +695,34 @@ curl -s -X DELETE $B/api/v1/policy/registry/rules | jq .error_code     # "METHOD
     </div>
     <div class="row">
       <span class="body"><span class="title">/approvals page didn't surface checkpoint_hash</span><span class="sub">cross-node resume demo had no UI anchor · now rendered as a copyable mono row per request</span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">memory_records.workflow_id NOT NULL</span><span class="sub">semantic-cache writes set workflow_id=None — direct-response workflows crashed on first completion · column now nullable (migration <code>b4d1a2c3e7f9</code>)</span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">Wallet balance endpoint ignored Workflow.budget_used</span><span class="sub">UI showed <code>0 cr</code> while backend tracked real cost · balance now returns <code>max(ledger, workflow.budget_used)</code></span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">Tool-loop exhaustion produced junk "COMPLETED" outputs</span><span class="sub">Claude returned <code>stop_reason=tool_use</code> for all 5 iterations → scheduler forced COMPLETE with incomplete tool sequence · now forces one final <code>tools=None</code> summary call; empty summary → FAIL cleanly</span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">Duplicate Task rows on retry (40+ rows for 5-node DAG)</span><span class="sub">every outer-loop re-entry stamped a new row · <code>_upsert_task_row</code> re-uses the row by <code>node.task_id</code></span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">reserve_budget called without idempotency_key</span><span class="sub">duplicate RESERVE events drained budget on retries · now keyed <code>{workflow}:{node}:reserve</code></span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">low_confidence_review approval flood</span><span class="sub">fire-and-forget approvals on every tick created thousands of records · now gated by <code>task.output.review_requested</code> flag, cleared on retry</span></span>
+      <span class="status green"><span class="dot green"></span>FIXED</span>
+    </div>
+    <div class="row">
+      <span class="body"><span class="title">Universal theme too dull</span><span class="sub">switched metallic <code>#E08A3E</code> → neon <code>#FF7A1A</code> / <code>#FFA340</code> across globals + components + dashboards</span></span>
       <span class="status green"><span class="dot green"></span>FIXED</span>
     </div>
   </div>

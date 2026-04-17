@@ -492,7 +492,7 @@ function ThinkingAnimation({
           <div className="flex items-center gap-2.5">
             <motion.div
               className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ background: "rgba(224,138,62,0.1)" }}
+              style={{ background: "rgba(255, 122, 26,0.1)" }}
               animate={{ scale: anyRunning ? [1, 1.08, 1] : [1, 1.03, 1] }}
               transition={{ duration: anyRunning ? 1.5 : 3, repeat: Infinity, ease: "easeInOut" }}
             >
@@ -531,7 +531,7 @@ function ThinkingAnimation({
                 <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
               </filter>
               <radialGradient id="hub-pulse">
-                <stop offset="0%" stopColor={anyRunning ? "rgba(212,175,55,0.12)" : "rgba(224,138,62,0.08)"} />
+                <stop offset="0%" stopColor={anyRunning ? "rgba(212,175,55,0.12)" : "rgba(255, 122, 26,0.08)"} />
                 <stop offset="100%" stopColor="transparent" />
               </radialGradient>
             </defs>
@@ -570,13 +570,13 @@ function ThinkingAnimation({
             <circle cx={CX} cy={CY} r="35" fill="url(#hub-pulse)">
               <animate attributeName="r" values={anyRunning ? "28;36;28" : "30;34;30"} dur={anyRunning ? "2s" : "4s"} repeatCount="indefinite" />
             </circle>
-            <circle cx={CX} cy={CY} r="22" fill="#0d0d15" stroke={anyRunning ? METALLIC.gold : "rgba(224,138,62,0.2)"} strokeWidth="1">
+            <circle cx={CX} cy={CY} r="22" fill="#0d0d15" stroke={anyRunning ? METALLIC.gold : "rgba(255, 122, 26,0.2)"} strokeWidth="1">
               {anyRunning && <animate attributeName="stroke-opacity" values="0.4;1;0.4" dur="1.5s" repeatCount="indefinite" />}
             </circle>
-            <circle cx={CX} cy={CY} r="22" fill="none" stroke={anyRunning ? "rgba(212,175,55,0.06)" : "rgba(224,138,62,0.05)"} strokeWidth="6" />
+            <circle cx={CX} cy={CY} r="22" fill="none" stroke={anyRunning ? "rgba(212,175,55,0.06)" : "rgba(255, 122, 26,0.05)"} strokeWidth="6" />
             <foreignObject x={CX - 10} y={CY - 10} width="20" height="20">
               <div className="w-5 h-5 flex items-center justify-center">
-                <Cpu size={14} style={{ color: anyRunning ? METALLIC.gold : "#E08A3E" }} />
+                <Cpu size={14} style={{ color: anyRunning ? METALLIC.gold : "#FF7A1A" }} />
               </div>
             </foreignObject>
             <text x={CX} y={CY + 34} textAnchor="middle" fill="rgba(148,163,184,0.4)" fontSize="7" fontFamily="system-ui" fontWeight="500">

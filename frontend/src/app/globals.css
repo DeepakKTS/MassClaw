@@ -2,13 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Theme: Dark Mode — Apple-inspired pure blacks ── */
+/* ── Theme: Dark Mode — neon orange on deep black ── */
 :root, .dark {
   --mc-bg: #0C0C0E;
   --mc-surface: #161618;
   --mc-border: #252528;
-  --mc-accent: #E08A3E;
-  --mc-accent-light: #F0A85C;
+  /* Brightened Nov-2026: bumped from #E08A3E to a neon orange so the
+     accent pops on the deep black background. Selection, glows, and
+     gradient borders all derive from these two tokens. */
+  --mc-accent: #FF7A1A;
+  --mc-accent-light: #FFA340;
   --mc-blue: #4A8EC2;
   --mc-blue-light: #7AB3D9;
   --mc-success: #30D158;
@@ -24,8 +27,10 @@
   --mc-bg: #FFFFFF;
   --mc-surface: #F5F5F7;
   --mc-border: #D2D2D7;
-  --mc-accent: #A66428;
-  --mc-accent-light: #E08A3E;
+  /* Light-mode accent keeps WCAG AA contrast on white while staying
+     in the same hue family as dark-mode neon. */
+  --mc-accent: #E85D00;
+  --mc-accent-light: #FF7A1A;
   --mc-blue: #3A7AAD;
   --mc-blue-light: #5A98C4;
   --mc-success: #248A3D;
@@ -104,7 +109,7 @@ body::before {
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  background: conic-gradient(from var(--border-angle), transparent 40%, #E08A3E 50%, #D4965A 55%, #4A8EC2 60%, transparent 70%);
+  background: conic-gradient(from var(--border-angle), transparent 40%, #FF7A1A 50%, #FFA340 55%, #4A8EC2 60%, transparent 70%);
   animation: border-rotate 4s linear infinite;
   z-index: -1;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -115,8 +120,8 @@ body::before {
 
 /* ── Glow Pulse ── */
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 15px rgba(224, 138, 62, 0.2), 0 0 30px rgba(224, 138, 62, 0.1); }
-  50% { box-shadow: 0 0 20px rgba(224, 138, 62, 0.35), 0 0 40px rgba(224, 138, 62, 0.15); }
+  0%, 100% { box-shadow: 0 0 15px rgba(255, 122, 26, 0.28), 0 0 30px rgba(255, 122, 26, 0.14); }
+  50% { box-shadow: 0 0 24px rgba(255, 122, 26, 0.50), 0 0 48px rgba(255, 122, 26, 0.22); }
 }
 .glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
 
@@ -133,8 +138,8 @@ body::before {
 .light ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.3); }
 
 /* ── Selection ── */
-::selection { background: rgba(224, 138, 62, 0.3); color: #fff; }
-.light ::selection { background: rgba(166, 100, 40, 0.2); color: #1D1D1F; }
+::selection { background: rgba(255, 122, 26, 0.35); color: #fff; }
+.light ::selection { background: rgba(232, 93, 0, 0.2); color: #1D1D1F; }
 
 /* ── CPU Architecture ── */
 .cpu-architecture { offset-anchor: 10px 0px; animation: animation-path; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(0.75, -0.01, 0, 0.99); }

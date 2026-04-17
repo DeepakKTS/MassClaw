@@ -11,9 +11,9 @@ const STATUS = {
   completed:   { fill: "#50C878", stroke: "#50C87880", glow: "rgba(80,200,120,0.18)" },
   failed:      { fill: "#E05555", stroke: "#E0555580", glow: "rgba(224,85,85,0.15)" },
   cancelled:   { fill: "#6B6B74", stroke: "#6B6B7480", glow: "rgba(107,107,116,0.1)" },
-  pending:     { fill: "#E08A3E", stroke: "#E08A3E80", glow: "rgba(224,138,62,0.22)" },
-  decomposing: { fill: "#E08A3E", stroke: "#E08A3E80", glow: "rgba(224,138,62,0.22)" },
-  running:     { fill: "#E08A3E", stroke: "#E08A3E80", glow: "rgba(224,138,62,0.28)" },
+  pending:     { fill: "#FF7A1A", stroke: "#FF7A1A80", glow: "rgba(255,122,26,0.28)" },
+  decomposing: { fill: "#FF7A1A", stroke: "#FF7A1A80", glow: "rgba(255,122,26,0.28)" },
+  running:     { fill: "#FF7A1A", stroke: "#FF7A1A80", glow: "rgba(255,122,26,0.38)" },
 } as const;
 
 function getStatus(s: string) { return STATUS[s as keyof typeof STATUS] || STATUS.completed; }
@@ -158,13 +158,13 @@ export function MissionDeck() {
         <svg width={svgWidth} height={H} viewBox={`0 0 ${svgWidth} ${H}`} className="block">
           <defs>
             <linearGradient id="wf-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(224,138,62,0.20)" />
-              <stop offset="50%" stopColor="rgba(224,138,62,0.06)" />
-              <stop offset="100%" stopColor="rgba(224,138,62,0)" />
+              <stop offset="0%" stopColor="rgba(255, 122, 26,0.20)" />
+              <stop offset="50%" stopColor="rgba(255, 122, 26,0.06)" />
+              <stop offset="100%" stopColor="rgba(255, 122, 26,0)" />
             </linearGradient>
             <linearGradient id="wf-mirror" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(224,138,62,0.08)" />
-              <stop offset="100%" stopColor="rgba(224,138,62,0)" />
+              <stop offset="0%" stopColor="rgba(255, 122, 26,0.08)" />
+              <stop offset="100%" stopColor="rgba(255, 122, 26,0)" />
             </linearGradient>
             <filter id="pk-glow" x="-100%" y="-100%" width="300%" height="300%">
               <feGaussianBlur stdDeviation="6" result="blur" />
@@ -181,7 +181,7 @@ export function MissionDeck() {
           </defs>
 
           {/* Ambient wave */}
-          <path d={ambientPath} fill="none" stroke="rgba(224,138,62,0.04)" strokeWidth="1.5" />
+          <path d={ambientPath} fill="none" stroke="rgba(255, 122, 26,0.04)" strokeWidth="1.5" />
 
           {/* Fill */}
           {wavePath && <path d={`${wavePath} L ${NOW_X + 10} ${BASELINE} L ${EDGE_PAD - 30} ${BASELINE} Z`} fill="url(#wf-fill)" />}
@@ -190,15 +190,15 @@ export function MissionDeck() {
           {wavePath && (
             <g opacity="0.25" transform={`translate(0, ${BASELINE * 2}) scale(1, -1)`}>
               <path d={`${wavePath} L ${NOW_X + 10} ${BASELINE} L ${EDGE_PAD - 30} ${BASELINE} Z`} fill="url(#wf-mirror)" />
-              <path d={wavePath} fill="none" stroke="rgba(224,138,62,0.12)" strokeWidth="1" />
+              <path d={wavePath} fill="none" stroke="rgba(255, 122, 26,0.12)" strokeWidth="1" />
             </g>
           )}
 
           {/* Line glow */}
-          {wavePath && <path d={wavePath} fill="none" stroke="rgba(224,138,62,0.15)" strokeWidth="4" strokeLinecap="round" filter="url(#wf-line-glow)" />}
+          {wavePath && <path d={wavePath} fill="none" stroke="rgba(255, 122, 26,0.15)" strokeWidth="4" strokeLinecap="round" filter="url(#wf-line-glow)" />}
 
           {/* Main line */}
-          {wavePath && <path d={wavePath} fill="none" stroke="rgba(224,138,62,0.45)" strokeWidth="1.5" strokeLinecap="round" />}
+          {wavePath && <path d={wavePath} fill="none" stroke="rgba(255, 122, 26,0.45)" strokeWidth="1.5" strokeLinecap="round" />}
 
           {/* Baseline */}
           <line x1={EDGE_PAD - 30} y1={BASELINE} x2={NOW_X + 10} y2={BASELINE} stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
@@ -244,13 +244,13 @@ export function MissionDeck() {
 
           {/* NOW */}
           <g>
-            <line x1={NOW_X} y1={BASELINE - 35} x2={NOW_X} y2={BASELINE + 20} stroke="rgba(224,138,62,0.12)" strokeWidth="1" strokeDasharray="3 4" />
-            <circle cx={NOW_X} cy={BASELINE} r="3.5" fill="#E08A3E" opacity="0.7">
+            <line x1={NOW_X} y1={BASELINE - 35} x2={NOW_X} y2={BASELINE + 20} stroke="rgba(255,122,26,0.16)" strokeWidth="1" strokeDasharray="3 4" />
+            <circle cx={NOW_X} cy={BASELINE} r="3.5" fill="#FF7A1A" opacity="0.85">
               <animate attributeName="r" values="2.5;4.5;2.5" dur="2s" repeatCount="indefinite" />
               <animate attributeName="opacity" values="0.4;0.9;0.4" dur="2s" repeatCount="indefinite" />
             </circle>
             <ellipse cx={NOW_X} cy={BASELINE - 1.5} rx="2" ry="1.2" fill="rgba(255,255,255,0.2)" />
-            <text x={NOW_X} y={BASELINE + 32} textAnchor="middle" fill="rgba(224,138,62,0.3)" fontSize="8" fontFamily="var(--font-geist-sans)" fontWeight="500">now</text>
+            <text x={NOW_X} y={BASELINE + 32} textAnchor="middle" fill="rgba(255, 122, 26,0.3)" fontSize="8" fontFamily="var(--font-geist-sans)" fontWeight="500">now</text>
           </g>
         </svg>
       </div>

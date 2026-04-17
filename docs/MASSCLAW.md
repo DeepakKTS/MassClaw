@@ -926,3 +926,59 @@ open file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html
 - `docs/phase1_checklist.md` — done / pending tracker
 - `docs/federation.md` — federation runbook (judge-oriented)
 - **Live status** — `massclaw_dashboard.html` (root + `docs/dashboard.html`)
+
+---
+
+## 22. Session continuity — where we are
+
+> Single source of truth for "what landed, what's pending, how to resume".
+> Updated in the same commit as the work it describes.
+
+### 22.1 · What's shipped (newest first)
+
+| Commit / session | What landed |
+|---|---|
+| **Day 22 late-night** | Scheduler tool-loop + duplicate-Task-row fix: `_run_tool_loop` extracted, exhaustion forces `tools=None` summary, `_upsert_task_row` re-uses rows by `node.task_id`, `reserve_budget` gets an idempotency_key, low-confidence review fires once per attempt (flag cleared on retry). New `test_scheduler_tool_loop.py` (6 tests). **Live probe**: the "top 10 agentic AI tools" prompt now completes with 6 task rows for a 6-node DAG, budget 7.27/25 cr. |
+| Day 22 evening | Universal neon-orange theme refresh: `#E08A3E → #FF7A1A` in globals, components, and dashboards. Wallet balance reconciled against `Workflow.budget_used` so direct-response cost shows in UI. |
+| Day 22 afternoon | `memory_records.workflow_id` made nullable (migration `b4d1a2c3e7f9`) so the semantic cache can write cross-workflow entries without crashing direct-response workflows. |
+| Day 22 morning | Auto-fallback `KeyStore` path to `~/.massclaw` when `/var/lib/massclaw` isn't writable. `credential_requires` policy rule made opt-in per its docstring. `/approvals` UI now surfaces `checkpoint_hash` per request. |
+| Days 12–18 | Checkpoint module + reflection hook + cross-node resume + reflection cache + policy registry (10 rules) + registry API + signed decision audit + `/policy` UI + `/audit` Policy Decisions tab + error envelope + body-size cap + 3 chaos scripts. |
+| Days 1–11 | Identity + AgentFacts v1 + NANDA Index client + CRDT store + gossip + lifecycle GC + federation compose + convergence gate. |
+
+### 22.2 · Still pending
+
+| Item | Status | Unblock | Effort |
+|---|---|---|---|
+| **Day 19 — stock-agent black-box harness** | in_progress | Write `scripts/stock_agent_harness.py` + 5 scenarios (search / HITL / policy / cross-node / partition) | 3–4 h |
+| **Day 20 — five demo recordings + friend dry-run** | pending | Run the stack + screen-record each scenario | 2 h |
+| **Day 21 — Phase-1 submission** | pending | Form fill + final checklist sign-off | 30 m |
+| Live federation partition/heal re-verify | pending | Docker up + `./scripts/demo_federation_test.sh` | 20 m |
+| Long-soak / multi-region latency measurements | deferred | Post-Phase-1 | — |
+| Learning-from-reflection pipeline | deferred | Phase-2 | — |
+| OPA/Rego policy backend | deferred | Phase-2 | — |
+
+### 22.3 · How to resume next session
+
+```bash
+# 1. Read this file + the dashboard
+open file:///Users/deepakzedler/Documents/MassClaw/massclaw_dashboard.html
+# look at §22.2 above for the top pending item.
+
+# 2. Confirm nothing regressed
+cd ~/Documents/MassClaw/backend
+python -m pytest tests/unit tests/integration \
+  --ignore=tests/unit/test_scheduler_cache.py -q
+# expect: 622 passed
+
+# 3. Boot the stack
+alembic upgrade head
+AUTH_REQUIRED=false IDENTITY_KEY_ENCRYPTION_KEY=$(printf '33%.0s' {1..32}) \
+  uvicorn app.main:app --port 8000 &
+(cd ../frontend && npm run dev &)
+
+# 4. Start Day-19 work — write scripts/stock_agent_harness.py
+#    · five scenarios from docs/MASSCLAW.md §18
+#    · no MassClaw-specific prompt tuning allowed
+#    · each scenario asserts green vs. red verdict
+```
+
