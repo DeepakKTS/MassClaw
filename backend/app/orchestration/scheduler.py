@@ -159,6 +159,17 @@ class WorkflowScheduler:
 
     MAX_RETRIES = 2
 
+    # Cap on re-plan injections per workflow — prevents the reflection
+    # engine from endlessly appending alt nodes when a fundamental issue
+    # (like a missing tool API key) causes every retry to also fail
+    # reflection's confidence check. Three total alternatives per
+    # workflow is enough for genuine refinement cases without letting
+    # a single missing Brave API key run the workflow past its 10-min
+    # timeout. Surfaced by OpenClaw harness s8 — without the cap, each
+    # compliance-audit task's web_search failure triggered an infinite
+    # t2 → t2_alt → t2_alt_alt → ... cascade.
+    MAX_REPLANS_PER_WORKFLOW = 3
+
     def __init__(
         self,
         session: AsyncSession,
@@ -172,6 +183,7 @@ class WorkflowScheduler:
         self.wallet_service = WalletService(session, redis)
         self.trust_service = TrustService(session, redis)
         self.model_router = get_model_router()
+        self._replan_count = 0
 
     async def execute_workflow(
         self,
@@ -1008,6 +1020,30 @@ class WorkflowScheduler:
 
         # ---------- re_plan / add_verifier: inject an alternative node
         if reflection.action in ("re_plan", "add_verifier"):
+            # Hard cap: replans add nodes, each of which can itself trigger
+            # another replan if the underlying issue persists (e.g. missing
+            # external API key). Without a ceiling the DAG grows without
+            # bound and the workflow times out with no useful output.
+            # After the cap we accept the task as-is and move forward; the
+            # workflow still completes with a clear "degraded synthesis"
+            # signal rather than stalling.
+            if self._replan_count >= self.MAX_REPLANS_PER_WORKFLOW:
+                logger.warning(
+                    "task_replan_cap_reached",
+                    node_id=node.node_id,
+                    replan_cap=self.MAX_REPLANS_PER_WORKFLOW,
+                    workflow_id=str(workflow.workflow_id),
+                    issues=list(reflection.issues or [])[:3],
+                )
+                task_rec.output["replan_capped"] = {
+                    "action_requested": reflection.action,
+                    "cap": self.MAX_REPLANS_PER_WORKFLOW,
+                    "issues": list(reflection.issues or [])[:3],
+                }
+                _flag_modified(task_rec, "output")
+                await self.session.flush()
+                return None
+
             context = "; ".join((reflection.issues or [])[:3]) or reflection.action
             # Cast add_verifier to re_plan for the replanner which only
             # reacts to the re_plan string. The intent is the same:
@@ -1018,6 +1054,8 @@ class WorkflowScheduler:
                 reflection_action="re_plan",
                 context=context,
             )
+            if new_nodes:
+                self._replan_count += 1
             if new_nodes:
                 task_rec.output["replan"] = {
                     "added_node_ids": [n.node_id for n in new_nodes],
