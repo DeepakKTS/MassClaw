@@ -238,10 +238,23 @@ class PeerClient:
 
 
 def _coerce_record(raw: dict) -> PeerRecord:
-    """Convert a JSON record dict into a :class:`PeerRecord`."""
+    """Convert a JSON record dict into a :class:`PeerRecord`.
+
+    Tolerates both ``metadata`` (clean wire name) and ``metadata_`` (the
+    SQLAlchemy column alias) for the metadata field. ``/api/v1/memory/sync/fetch``
+    historically serialised with ``by_alias=True`` which produced
+    ``metadata_`` on the wire — peers then reconstructed the canonical
+    body with an empty metadata dict and computed a DIFFERENT hash than
+    the author node, flagging every gossiped record as signature-invalid
+    and silently breaking convergence. Accepting both field names is the
+    minimal safe fix that works against older and newer peers alike.
+    """
     content_hash = raw.get("hash") or raw.get("content_hash")
     if not isinstance(content_hash, str) or not content_hash:
         raise PeerInvalidResponseError(f"peer record missing 'hash' field: {raw!r}")
+    metadata = raw.get("metadata")
+    if metadata is None:
+        metadata = raw.get("metadata_")
     return PeerRecord(
         content_hash=content_hash,
         workflow_id=str(raw.get("workflow_id", "")),
@@ -249,7 +262,7 @@ def _coerce_record(raw: dict) -> PeerRecord:
         memory_type=str(raw.get("memory_type", "result")),
         content=str(raw.get("content", "")),
         confidence=float(raw.get("confidence", 0.0)),
-        metadata=dict(raw.get("metadata") or {}),
+        metadata=dict(metadata or {}),
         author_did=(raw.get("author_did") or None),
         parent_hashes=list(raw.get("parent_hashes") or []),
         signature=(raw.get("signature") or None),

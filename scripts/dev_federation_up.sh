@@ -180,11 +180,23 @@ start_node() {
     echo $! > "$pid_file"
   )
 
-  # Celery (worker + beat combined)
+  # Celery (worker + beat combined).
+  #
+  # IMPORTANT: cap the file-descriptor soft limit before launching. On
+  # modern macOS the default `ulimit -n` is so high that billiard's
+  # close_open_fds() — used by celery beat at startup — overflows
+  # Python's int-to-C-int conversion and crashes the beat process with
+  # "OverflowError: Python int too large to convert to C int". When that
+  # happens the worker starts fine but no scheduled tasks ever fire,
+  # which silently breaks the entire gossip protocol (records write to
+  # the local node but never propagate to peers). Capping at 1024 keeps
+  # the iteration range well within a C int and costs nothing for our
+  # workload (we never open thousands of fds).
   local celery_pid_file="${RUNTIME}/celery-${suffix}.pid"
   (
     cd "$REPO_ROOT/backend"
     eval "$(node_env "$suffix" "$port" "$peers")"
+    ulimit -n 1024
     nohup celery -A app.workers.celery_app worker --beat \
       -Q crdt_sync,health,trust,memory,workflow,audit -l info \
       > "${RUNTIME}/celery-${suffix}.log" 2>&1 &

@@ -10,10 +10,32 @@ from app.config import get_settings
 from app.core.redis import get_redis_manager
 
 # Paths exempt from rate limiting
-EXEMPT_PATHS = {"/health", "/metrics", "/api/v1/workflows/{id}/stream"}
+EXEMPT_PATHS = {
+    "/health",
+    "/metrics",
+    "/ready",
+    "/api/v1/workflows/{id}/stream",
+    "/.well-known/agent-facts.json",
+}
 
-# Path prefixes exempt from rate limiting (polling endpoints)
-EXEMPT_PREFIXES = ("/api/v1/workflows/", "/api/v1/tasks/", "/api/v1/wallet/")
+# Path prefixes exempt from rate limiting (polling endpoints + peer-to-peer
+# federation traffic + demo-mode scaffolding).
+#
+# /api/v1/memory/sync/ is the gossip protocol — when it gets rate-limited,
+# nodes stop being able to reconcile records with each other and the
+# "decentralized" claim silently collapses. Each node polls its peers every
+# GOSSIP_INTERVAL_SECONDS (default 5s), so even a modest federation of
+# 3 nodes generates (3-1)*2*12 = 48 requests/minute per node per peer pair
+# — above the default 100 req/min cap once other legitimate traffic is
+# added. Peer-auth signing + MASSCLAW_PEER_ALLOWLIST already gate who can
+# hit these endpoints; a simple IP rate-limit only causes false negatives.
+EXEMPT_PREFIXES = (
+    "/api/v1/workflows/",
+    "/api/v1/tasks/",
+    "/api/v1/wallet/",
+    "/api/v1/memory/sync/",
+    "/api/v1/demo/",
+)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -23,8 +45,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in EXEMPT_PATHS or request.method == "OPTIONS":
             return await call_next(request)
 
-        # Exempt polling endpoints (GET on workflow/task/wallet status)
-        if request.method == "GET" and any(request.url.path.startswith(p) for p in EXEMPT_PREFIXES):
+        # Exempt polling endpoints + peer-to-peer + demo scaffolding.
+        # Apply to any HTTP method since /memory/sync/fetch is POST + signed,
+        # and /demo/* endpoints (self-sign-write, seed-workflow) also POST.
+        if any(request.url.path.startswith(p) for p in EXEMPT_PREFIXES):
             return await call_next(request)
 
         settings = get_settings()
