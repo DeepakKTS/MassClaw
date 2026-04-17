@@ -36,6 +36,7 @@ async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -
     import asyncio
 
     from app.core.logging import get_logger
+    from app.orchestration.scheduler import SchedulerPausedForApproval
 
     logger = get_logger("workflow_bg")
 
@@ -62,6 +63,19 @@ async def _execute_workflow_background(workflow_id: str, data: WorkflowCreate) -
     except TimeoutError:
         logger.error("workflow_timeout", workflow_id=workflow_id, timeout=MAX_WORKFLOW_TIMEOUT_SECONDS)
         await _mark_workflow_failed(workflow_id, f"Workflow timed out after {MAX_WORKFLOW_TIMEOUT_SECONDS}s")
+    except SchedulerPausedForApproval as paused:
+        # Normal control-flow exit — the scheduler has persisted
+        # AWAITING_APPROVAL + a signed checkpoint + an approval twin
+        # in CRDT. Execution resumes when /workflows/{id}/resume is
+        # called (by a local human or a federated peer). Do NOT mark
+        # the workflow as failed.
+        logger.info(
+            "workflow_paused_for_approval",
+            workflow_id=workflow_id,
+            node_id=paused.node_id,
+            request_id=paused.request_id,
+            checkpoint_hash=paused.checkpoint_hash,
+        )
     except Exception as e:
         logger.error("workflow_background_failed", workflow_id=workflow_id, error=str(e), error_type=type(e).__name__)
         await _mark_workflow_failed(workflow_id, str(e))
@@ -443,12 +457,34 @@ async def resume_workflow(
     from app.services.identity_service import get_instance_key_store
 
     # Optional: verify the approval exists and was actually approved.
+    # Redis is the fast path; CRDT is the fallback for two cases:
+    #   (a) TTL expired on Redis but the signed decision is still in CRDT.
+    #   (b) A peer node received + approved this request and only the
+    #       federated twin is visible locally.
     if body.approval_id:
         approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
+        approval = None
         try:
             approval = await approval_mgr.check_status(body.approval_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError:
+            approval = None
+
+        if approval is None:
+            try:
+                from app.safety.federated_approval import FederatedApprovalStore
+                from app.services.identity_service import get_instance_key_store
+
+                federated_keypair = get_instance_key_store().instance_keypair()
+                federated_store = FederatedApprovalStore(session=session, keypair=federated_keypair)
+                approval = await federated_store.find_by_request_id(body.approval_id)
+            except Exception:
+                approval = None
+
+        if approval is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Approval request {body.approval_id!r} not found in Redis or CRDT.",
+            )
         if approval.status != "approved":
             raise HTTPException(
                 status_code=409,
@@ -509,7 +545,7 @@ async def _resume_run_background(workflow_id: str) -> None:
         from app.models.workflow import Workflow as WfModel
         from app.orchestration.agent_selector import AgentSelector
         from app.orchestration.dag import DAG
-        from app.orchestration.scheduler import WorkflowScheduler
+        from app.orchestration.scheduler import SchedulerPausedForApproval, WorkflowScheduler
 
         redis = get_redis_manager().get_cache_client()
         async with db_session_context() as session:
@@ -538,6 +574,17 @@ async def _resume_run_background(workflow_id: str) -> None:
             scheduler = WorkflowScheduler(session=session, redis=redis)
             try:
                 await scheduler.execute_workflow(workflow, dag, agents)
+            except SchedulerPausedForApproval as paused:
+                # The resumed workflow has a fresh approval gate (e.g. a
+                # second high-risk node downstream). Leave AWAITING_APPROVAL
+                # in place; the next /resume call continues from here.
+                logger.info(
+                    "resume_workflow_paused_for_approval",
+                    workflow_id=workflow_id,
+                    node_id=paused.node_id,
+                    request_id=paused.request_id,
+                    checkpoint_hash=paused.checkpoint_hash,
+                )
             except Exception as exc:
                 logger.warning(
                     "resume_workflow_run_failed",

@@ -32,6 +32,34 @@ from app.services.wallet_service import WalletService
 
 logger = get_logger(__name__)
 
+
+class SchedulerPausedForApproval(Exception):  # noqa: N818 — control-flow sentinel, not an error
+    """Raised by Phase 1.5 when the workflow is paused awaiting a human.
+
+    The scheduler commits ``workflow.status = AWAITING_APPROVAL`` in a
+    short-lived session, persists a signed checkpoint + federated
+    approval twin, and then raises this exception to unwind the main
+    ``execute_workflow`` coroutine cleanly. The caller in
+    :mod:`app.api.workflows` catches it and lets the background task
+    exit — the workflow resumes later via ``POST /workflows/{id}/resume``,
+    which is the same entry point used for cross-node HITL handoff.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_id: str,
+        node_id: str,
+        request_id: str,
+        checkpoint_hash: str | None,
+    ) -> None:
+        super().__init__(f"workflow {workflow_id} paused for approval at node {node_id} (request {request_id})")
+        self.workflow_id = workflow_id
+        self.node_id = node_id
+        self.request_id = request_id
+        self.checkpoint_hash = checkpoint_hash
+
+
 # Agent system prompts by capability
 AGENT_PROMPTS: dict[str, str] = {
     "intake": (
@@ -348,35 +376,72 @@ class WorkflowScheduler:
                     nodes_needing_approval.append(node)
 
             if nodes_needing_approval:
+                from app.core.database import db_session_context as _approval_session_ctx
                 from app.core.redis import get_redis_manager
                 from app.orchestration.checkpoint import CheckpointStore, WorkflowCheckpoint
                 from app.safety.approval import ApprovalManager
+                from app.safety.federated_approval import FederatedApprovalStore
                 from app.services.identity_service import get_instance_key_store
 
                 approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
+                keypair = get_instance_key_store().instance_keypair()
 
                 for node in nodes_needing_approval:
                     task_rec = node_contexts[node.node_id][0]
                     agent = node_contexts[node.node_id][1]
 
-                    # Persist a signed checkpoint BEFORE we block on the
-                    # human. Must use a SEPARATE autocommit session so the
-                    # record is durable + visible to the /resume endpoint
-                    # (which runs in its own session) before we go to sleep
-                    # waiting for the human. Using self.session here would
-                    # leave the checkpoint in an uncommitted transaction
-                    # for the duration of the approval wait — any resume
-                    # attempt from another connection would 404.
-                    #
-                    # The content hash propagates via CRDT gossip once
-                    # committed, so any federated peer can also pull the
-                    # state and resume execution once the decision lands.
+                    # Fast-path: if this node's approval is already decided
+                    # in CRDT, we're inside a /resume re-entry. Honour the
+                    # decision and skip the gate.
+                    federated_decision = None
+                    try:
+                        async with _approval_session_ctx() as lookup_session:
+                            federated_store = FederatedApprovalStore(session=lookup_session, keypair=keypair)
+                            federated_decision = await federated_store.find_decision_for_node(
+                                workflow.workflow_id, node.node_id
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "approval_federated_lookup_failed",
+                            workflow_id=str(workflow.workflow_id),
+                            node_id=node.node_id,
+                            error=str(exc),
+                        )
+                    if federated_decision is not None:
+                        if federated_decision.status == "denied":
+                            dag.mark_failed(
+                                node.node_id,
+                                error=f"Denied by human: {federated_decision.decided_by or 'reviewer'}",
+                            )
+                            task_rec.status = TaskStatus.SKIPPED
+                            task_rec.error_message = (
+                                f"Denied: {federated_decision.context.get('denial_reason', 'No reason provided')}"
+                            )
+                            await self.session.flush()
+                            if node.node_id in node_contexts:
+                                del node_contexts[node.node_id]
+                            continue
+                        # Approved or expired — proceed with execution.
+                        logger.info(
+                            "approval_resume_skip_gate",
+                            workflow_id=str(workflow.workflow_id),
+                            node_id=node.node_id,
+                            status=federated_decision.status,
+                            decided_by=federated_decision.decided_by,
+                        )
+                        continue
+
+                    # Persist a signed checkpoint BEFORE we exit. The
+                    # /resume endpoint (and peer nodes reached via gossip)
+                    # reconstruct the DAG from this hash. Must use a
+                    # SEPARATE autocommit session so the record is durable
+                    # across connection boundaries — using self.session
+                    # here would leave the checkpoint inside the scheduler's
+                    # long-lived transaction, invisible to a peer node's
+                    # /resume call.
                     checkpoint_hash: str | None = None
                     try:
-                        keypair = get_instance_key_store().instance_keypair()
-                        from app.core.database import db_session_context as _cp_session_ctx
-
-                        async with _cp_session_ctx() as cp_session:
+                        async with _approval_session_ctx() as cp_session:
                             cp_store = CheckpointStore(session=cp_session, keypair=keypair)
                             cp = WorkflowCheckpoint.from_dag(
                                 workflow_id=workflow.workflow_id,
@@ -391,8 +456,6 @@ class WorkflowScheduler:
                             saved = await cp_store.save(cp)
                             checkpoint_hash = saved.content_hash
                     except Exception as exc:
-                        # Checkpoint failures must not block the approval
-                        # flow — fall back to Redis-only behaviour and log.
                         logger.warning(
                             "approval_checkpoint_failed",
                             workflow_id=str(workflow.workflow_id),
@@ -414,27 +477,52 @@ class WorkflowScheduler:
                         policy_rule="high_risk_task",
                         timeout_seconds=300,
                         checkpoint_hash=checkpoint_hash,
+                        node_id=node.node_id,
                     )
 
-                    # Non-blocking: check if auto-approved by policy, otherwise mark as awaiting
+                    # Non-blocking auto-approval check.
                     try:
                         decision = await approval_mgr.check_status(request.request_id)
                     except ValueError:
                         decision = None
 
                     if decision and decision.status == "pending":
-                        task_rec.status = TaskStatus.AWAITING_APPROVAL
-                        task_rec.error_message = f"Awaiting human approval (request: {request.request_id})"
+                        # Commit AWAITING_APPROVAL via a dedicated short-
+                        # lived session so the state is visible to concurrent
+                        # /status readers *immediately*. Commiting on
+                        # self.session here would expire the ORM workflow
+                        # object, and past attempts to do so introduced the
+                        # subtle loop-stall regressions documented in the
+                        # scheduler preamble. The satellite-session approach
+                        # is the same pattern used for the checkpoint write
+                        # above.
+                        try:
+                            async with _approval_session_ctx() as status_session:
+                                from sqlalchemy import update as _sql_update
 
-                        # AWAITING_APPROVAL is the publicly-visible workflow
-                        # state while a human reviewer decides. Commit so
-                        # the status is visible to the /status endpoint
-                        # running in a separate session — otherwise the
-                        # stock agent polling status would never see the
-                        # state and could not even know it needs to
-                        # approve the request.
-                        workflow.status = WorkflowStatus.AWAITING_APPROVAL
-                        await self.session.commit()
+                                from app.models.task import Task as _TaskModel
+                                from app.models.workflow import Workflow as _WfModel
+
+                                await status_session.execute(
+                                    _sql_update(_WfModel)
+                                    .where(_WfModel.workflow_id == workflow.workflow_id)
+                                    .values(status=WorkflowStatus.AWAITING_APPROVAL)
+                                )
+                                await status_session.execute(
+                                    _sql_update(_TaskModel)
+                                    .where(_TaskModel.task_id == task_rec.task_id)
+                                    .values(
+                                        status=TaskStatus.AWAITING_APPROVAL,
+                                        error_message=(f"Awaiting human approval (request: {request.request_id})"),
+                                    )
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "approval_status_commit_failed",
+                                workflow_id=str(workflow.workflow_id),
+                                node_id=node.node_id,
+                                error=str(exc),
+                            )
 
                         await self._publish_progress(
                             workflow,
@@ -448,28 +536,24 @@ class WorkflowScheduler:
                             },
                         )
 
-                        # Wait for decision (with timeout)
-                        final = await approval_mgr.wait_for_decision(request.request_id, timeout=300)
+                        # Exit the scheduler cleanly. The workflow resumes
+                        # via /workflows/{id}/resume once a human decides —
+                        # same entry point used for cross-node HITL. The
+                        # rest of the DAG (Phase 2 LLM calls, Phase 3 result
+                        # processing) is skipped this turn; next re-entry
+                        # starts the loop over with the refreshed state.
+                        raise SchedulerPausedForApproval(
+                            workflow_id=str(workflow.workflow_id),
+                            node_id=node.node_id,
+                            request_id=request.request_id,
+                            checkpoint_hash=checkpoint_hash,
+                        )
 
-                        workflow.status = WorkflowStatus.RUNNING
-                        await self.session.commit()
-
-                        if final and final.status == "denied":
-                            dag.mark_failed(node.node_id, error=f"Denied by human: {final.decided_by or 'reviewer'}")
-                            task_rec.status = TaskStatus.SKIPPED
-                            task_rec.error_message = (
-                                f"Denied: {final.context.get('denial_reason', 'No reason provided')}"
-                            )
-                            await self.session.flush()
-                            # Remove from active nodes so it's skipped in Phase 2
-                            if node.node_id in node_contexts:
-                                del node_contexts[node.node_id]
-                            continue
-
-                        # Approved or expired — restore task status and proceed
-                        task_rec.status = TaskStatus.RUNNING
-                        task_rec.error_message = None
-                        await self.session.flush()
+                    # Auto-approved by policy before a human saw it — fall
+                    # through to Phase 2.
+                    task_rec.status = TaskStatus.RUNNING
+                    task_rec.error_message = None
+                    await self.session.flush()
 
             # Phase 2: Run LLM calls in parallel (budget already reserved)
             # Tiered Model Cascade: Haiku for simple tasks, Sonnet for complex/verification
