@@ -65,8 +65,11 @@ def get_instance_key_store() -> KeyStore:
             raise IdentityServiceError("IDENTITY_KEY_ENCRYPTION_KEY must be a hex-encoded 32-byte key") from exc
         if len(kek_bytes) != 32:
             raise IdentityServiceError(f"IDENTITY_KEY_ENCRYPTION_KEY must decode to 32 bytes (got {len(kek_bytes)})")
+    # Passing an empty string would force that path — we want KeyStore's
+    # own fallback probe to run in that case. ``None`` triggers it.
+    explicit_path = settings.identity_instance_key_path or None
     return KeyStore(
-        instance_key_path=settings.identity_instance_key_path,
+        instance_key_path=explicit_path,
         key_encryption_key=kek_bytes,
     )
 

@@ -27,11 +27,37 @@ from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 from app.identity.signer import KeyPair, generate_keypair, load_private_key
 
-# Default path for the instance key, can be overridden by the env var of the same name.
-_DEFAULT_INSTANCE_KEY_PATH = "/var/lib/massclaw/instance.key"
+# Default path for the instance key. Preference order:
+#   1. IDENTITY_INSTANCE_KEY_PATH env var (explicit override)
+#   2. /var/lib/massclaw/instance.key  (production — root-owned dir, 0600 file)
+#   3. ~/.massclaw/instance.key        (fallback for dev boxes where /var/lib is not writable)
+# The fallback keeps scheduler + resume endpoints usable in local dev
+# without needing to export env vars; production deployments always set
+# IDENTITY_INSTANCE_KEY_PATH explicitly.
+_PRIMARY_INSTANCE_KEY_PATH = "/var/lib/massclaw/instance.key"
+_USER_INSTANCE_KEY_PATH = "~/.massclaw/instance.key"
 _ENV_INSTANCE_KEY_PATH = "IDENTITY_INSTANCE_KEY_PATH"
 _ENV_KEY_ENCRYPTION_KEY = "IDENTITY_KEY_ENCRYPTION_KEY"  # hex-encoded 32-byte KEK
 _NONCE_SIZE = 12  # ChaCha20-Poly1305 nonce size in bytes
+
+
+def _default_instance_key_path() -> Path:
+    """Pick a writable default for the instance key file.
+
+    Tries the production path first (``/var/lib/massclaw``) and falls
+    back to the user-home path on permission error. Tested on every
+    call because during app startup /var/lib may or may not be mounted.
+    """
+    primary = Path(_PRIMARY_INSTANCE_KEY_PATH)
+    try:
+        primary.parent.mkdir(parents=True, exist_ok=True)
+        # Smoke-test writability without leaving a file around.
+        probe = primary.parent / ".write_probe"
+        probe.touch(exist_ok=True)
+        probe.unlink(missing_ok=True)
+        return primary
+    except (PermissionError, OSError):
+        return Path(_USER_INSTANCE_KEY_PATH).expanduser()
 
 
 class KeyStoreError(Exception):
@@ -59,8 +85,13 @@ class KeyStore:
         instance_key_path: str | Path | None = None,
         key_encryption_key: bytes | None = None,
     ) -> None:
-        resolved_path = instance_key_path or os.getenv(_ENV_INSTANCE_KEY_PATH) or _DEFAULT_INSTANCE_KEY_PATH
-        self._instance_key_path = Path(resolved_path)
+        env_override = os.getenv(_ENV_INSTANCE_KEY_PATH)
+        if instance_key_path is not None:
+            self._instance_key_path = Path(instance_key_path)
+        elif env_override:
+            self._instance_key_path = Path(env_override)
+        else:
+            self._instance_key_path = _default_instance_key_path()
         self._kek = key_encryption_key or _load_kek_from_env()
         self._instance_keypair: KeyPair | None = None
 

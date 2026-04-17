@@ -121,6 +121,24 @@ function ApprovalCard({ request }: { request: any }) {
         )}
       </div>
 
+      {/* Checkpoint hash — the primitive that lets any federation peer
+          resume this workflow if the originator dies. Click-to-copy
+          so operators can use it against POST /workflows/{id}/resume. */}
+      {request.checkpoint_hash && (
+        <div className="glass rounded-lg p-3 space-y-1">
+          <p className="text-massclaw-text-muted text-[10px] uppercase tracking-wider">
+            Resume Pointer (checkpoint hash)
+          </p>
+          <button
+            onClick={() => navigator.clipboard?.writeText(request.checkpoint_hash)}
+            title="Copy full hash"
+            className="w-full text-left font-mono text-[11px] text-accent-300 hover:text-accent-200 truncate"
+          >
+            {request.checkpoint_hash}
+          </button>
+        </div>
+      )}
+
       {/* Output preview */}
       {outputPreview && (
         <div className="glass rounded-lg p-3">

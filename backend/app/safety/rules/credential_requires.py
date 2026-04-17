@@ -25,11 +25,19 @@ DEFAULT_SENSITIVE_CATEGORIES: frozenset[str] = frozenset({"payment", "deploy", "
 
 
 def _category_triggers(ctx: PolicyContext, sensitive: set[str]) -> bool:
-    if ctx.action_category in sensitive:
-        return True
-    if bool(ctx.extra.get("require_credential")):
-        return True
-    return False
+    """Opt-in Phase-1 trigger.
+
+    Phase-1 agents don't yet carry robustness credentials, so the rule
+    must stay silent by default. It only activates when the caller
+    explicitly opts in by setting ``ctx.extra["require_credential"]``
+    truthy AND the action_category is sensitive. This matches the
+    module docstring and prevents the rule from swamping the trust +
+    cost escalate_human paths for ordinary payment flows that the
+    rest of the demo relies on.
+    """
+    if not bool(ctx.extra.get("require_credential")):
+        return False
+    return ctx.action_category in sensitive
 
 
 def _credential_is_valid(cred: dict | None, now: datetime) -> tuple[bool, str]:

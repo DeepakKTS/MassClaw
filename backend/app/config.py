@@ -130,7 +130,9 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Identity / AgentFacts — Phase 1 NandaHack
-    identity_instance_key_path: str = "/var/lib/massclaw/instance.key"
+    # Empty string → KeyStore picks a writable default (prod /var/lib,
+    # dev ~/.massclaw). Override explicitly via IDENTITY_INSTANCE_KEY_PATH.
+    identity_instance_key_path: str = ""
     identity_key_encryption_key: str = ""  # hex-encoded 32-byte KEK; required for at-rest agent key wrapping
     identity_public_base_url: str = "http://localhost:8000"  # base URL exposed to the NANDA Index and stock agents
     identity_trust_zone: str = "self-issued"

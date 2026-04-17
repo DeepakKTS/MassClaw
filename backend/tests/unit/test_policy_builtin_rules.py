@@ -321,14 +321,28 @@ class TestCrossAgentDelegation:
 
 
 class TestCredentialRequires:
+    """Phase-1 credential gate is OPT-IN via ``extra.require_credential``.
+
+    A bare payment with no opt-in must not trigger the rule — that's
+    what lets trust-floor and cost-cap escalation paths run cleanly
+    without a credential attached. Turning the rule on requires
+    ``require_credential=true`` in the policy context's extra bag.
+    """
+
     @pytest.mark.asyncio
     async def test_non_sensitive_abstains(self) -> None:
         d = await r_cred.credential_requires(_ctx(action_category="research"))
         assert d.action is DecisionAction.ABSTAIN
 
     @pytest.mark.asyncio
-    async def test_missing_credential_denies(self) -> None:
+    async def test_sensitive_without_optin_abstains(self) -> None:
+        # Phase-1: no require_credential flag → the rule is inert.
         d = await r_cred.credential_requires(_ctx(action_category="payment"))
+        assert d.action is DecisionAction.ABSTAIN
+
+    @pytest.mark.asyncio
+    async def test_opted_in_missing_credential_denies(self) -> None:
+        d = await r_cred.credential_requires(_ctx(action_category="payment", extra={"require_credential": True}))
         assert d.action is DecisionAction.DENY
 
     @pytest.mark.asyncio
@@ -339,7 +353,10 @@ class TestCredentialRequires:
             _ctx(
                 action_category="payment",
                 now=now,
-                extra={"credential": {"expires_at": expired}},
+                extra={
+                    "require_credential": True,
+                    "credential": {"expires_at": expired},
+                },
             )
         )
         assert d.action is DecisionAction.DENY
@@ -352,7 +369,10 @@ class TestCredentialRequires:
             _ctx(
                 action_category="payment",
                 now=now,
-                extra={"credential": {"expires_at": expires}},
+                extra={
+                    "require_credential": True,
+                    "credential": {"expires_at": expires},
+                },
             )
         )
         assert d.action is DecisionAction.ALLOW
