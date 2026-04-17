@@ -93,3 +93,69 @@ async def get_audit_stats(
     Optionally filter by workflow_id and/or a lower time bound.
     """
     return await service.count_events(workflow_id=workflow_id, since=since)
+
+
+# ---------------------------------------------------------------------------
+# Policy decisions — backed by the signed CRDT memory records that
+# :mod:`app.safety.audit` writes. Every decision is verifiable on its
+# own (content-addressed hash + Ed25519 signature).
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/policy-decisions",
+    summary="List signed policy-decision audit records",
+)
+async def list_policy_decisions(
+    workflow_id: uuid.UUID | None = Query(default=None),
+    action: str | None = Query(
+        default=None,
+        description="Filter by decision action (allow, deny, escalate_human).",
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict]:
+    """Return signed policy-decision records newest-first."""
+    from fastapi import HTTPException
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.core.database import get_db_session
+    from app.safety.audit import (
+        POLICY_CONTEXT_SUMMARY_KEY,
+        POLICY_DECISION_PAYLOAD_KEY,
+        list_decisions,
+    )
+    from app.safety.decision import DecisionAction
+
+    parsed_action: DecisionAction | None = None
+    if action is not None:
+        try:
+            parsed_action = DecisionAction(action)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"unknown action {action!r}") from exc
+
+    session: AsyncSession
+    async for session in get_db_session():
+        records = await list_decisions(
+            session,
+            workflow_id=workflow_id,
+            action=parsed_action,
+            limit=limit,
+            offset=offset,
+        )
+        break
+    else:
+        return []
+
+    return [
+        {
+            "content_hash": r.content_hash,
+            "workflow_id": str(r.workflow_id),
+            "author_did": r.author_did,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "content": r.content,
+            "decision": (r.metadata_ or {}).get(POLICY_DECISION_PAYLOAD_KEY),
+            "context": (r.metadata_ or {}).get(POLICY_CONTEXT_SUMMARY_KEY),
+        }
+        for r in records
+    ]

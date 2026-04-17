@@ -233,3 +233,173 @@ async def analyze_injection(
         patterns_matched=assessment.patterns_matched,
         explanation=assessment.explanation,
     )
+
+
+# ---------------------------------------------------------------------------
+# Registry API (new @policy_rule-based engine; Day-15 onwards)
+#
+# These endpoints talk to :mod:`app.safety.registry`, not the legacy
+# JSON-rule service. Both coexist until Day-17's frontend swap retires
+# the JSON path for good.
+# ---------------------------------------------------------------------------
+
+
+class RegistryRuleResponse(BaseModel):
+    rule_id: str
+    description: str
+    priority: int
+    enabled: bool
+    tags: list[str] = Field(default_factory=list)
+
+
+class RegistryToggleResponse(BaseModel):
+    rule_id: str
+    enabled: bool
+
+
+class RegistryDecisionResponse(BaseModel):
+    action: str
+    rule_id: str | None = None
+    reason: str
+    metadata: dict = Field(default_factory=dict)
+    contributing_rule_ids: list[str] = Field(default_factory=list)
+
+
+class RegistryEvaluateRequest(BaseModel):
+    """Minimal PolicyContext payload for the dry-run API.
+
+    Only fields that round-trip over JSON are accepted — live
+    session / redis handles are omitted.
+    """
+
+    agent_did: str | None = None
+    agent_trust_score: float | None = None
+    agent_capabilities: list[str] = Field(default_factory=list)
+    agent_id: str | None = None
+    action: str = ""
+    action_category: str | None = None
+    tool_name: str | None = None
+    amount: float | None = None
+    target: str | None = None
+    estimated_cost: float | None = None
+    workflow_id: str | None = None
+    task_id: str | None = None
+    extra: dict = Field(default_factory=dict)
+    rule_ids: list[str] | None = Field(
+        default=None,
+        description="If set, only evaluate these specific rule IDs.",
+    )
+
+
+@router.get(
+    "/registry/rules",
+    response_model=list[RegistryRuleResponse],
+    summary="List registered @policy_rule entries",
+)
+async def list_registry_rules() -> list[RegistryRuleResponse]:
+    from app.safety.registry import PolicyRegistry
+
+    rules = PolicyRegistry.all(include_disabled=True)
+    return [
+        RegistryRuleResponse(
+            rule_id=r.rule_id,
+            description=r.description,
+            priority=r.priority,
+            enabled=r.enabled,
+            tags=list(r.tags),
+        )
+        for r in rules
+    ]
+
+
+@router.get(
+    "/registry/rules/{rule_id}",
+    response_model=RegistryRuleResponse,
+    summary="Fetch a single registered rule",
+)
+async def get_registry_rule(rule_id: str) -> RegistryRuleResponse:
+    from fastapi import HTTPException
+
+    from app.safety.registry import PolicyRegistry
+
+    entry = PolicyRegistry.get(rule_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"rule {rule_id!r} not registered")
+    return RegistryRuleResponse(
+        rule_id=entry.rule_id,
+        description=entry.description,
+        priority=entry.priority,
+        enabled=entry.enabled,
+        tags=list(entry.tags),
+    )
+
+
+@router.post(
+    "/registry/rules/{rule_id}/enable",
+    response_model=RegistryToggleResponse,
+    summary="Enable a registered rule",
+)
+async def enable_registry_rule(rule_id: str) -> RegistryToggleResponse:
+    from fastapi import HTTPException
+
+    from app.safety.registry import PolicyRegistry
+
+    if not PolicyRegistry.set_enabled(rule_id, True):
+        raise HTTPException(status_code=404, detail=f"rule {rule_id!r} not registered")
+    return RegistryToggleResponse(rule_id=rule_id, enabled=True)
+
+
+@router.post(
+    "/registry/rules/{rule_id}/disable",
+    response_model=RegistryToggleResponse,
+    summary="Disable a registered rule",
+)
+async def disable_registry_rule(rule_id: str) -> RegistryToggleResponse:
+    from fastapi import HTTPException
+
+    from app.safety.registry import PolicyRegistry
+
+    if not PolicyRegistry.set_enabled(rule_id, False):
+        raise HTTPException(status_code=404, detail=f"rule {rule_id!r} not registered")
+    return RegistryToggleResponse(rule_id=rule_id, enabled=False)
+
+
+@router.post(
+    "/registry/evaluate",
+    response_model=RegistryDecisionResponse,
+    summary="Dry-run the registry against a hand-built PolicyContext",
+)
+async def evaluate_registry(body: RegistryEvaluateRequest) -> RegistryDecisionResponse:
+    """Build a :class:`PolicyContext` from the payload and run the engine.
+
+    This is the endpoint the frontend's live tester calls: paste a
+    JSON body, see the aggregated decision and which rules
+    contributed, without executing anything.
+    """
+
+    from app.safety.context import PolicyContext
+    from app.safety.registry import evaluate as policy_evaluate
+
+    ctx = PolicyContext(
+        agent_did=body.agent_did,
+        agent_trust_score=body.agent_trust_score,
+        agent_capabilities=tuple(body.agent_capabilities),
+        agent_id=uuid.UUID(body.agent_id) if body.agent_id else None,
+        action=body.action,
+        action_category=body.action_category,
+        tool_name=body.tool_name,
+        amount=body.amount,
+        target=body.target,
+        estimated_cost=body.estimated_cost,
+        workflow_id=uuid.UUID(body.workflow_id) if body.workflow_id else None,
+        task_id=uuid.UUID(body.task_id) if body.task_id else None,
+        extra=dict(body.extra),
+    )
+    decision = await policy_evaluate(ctx, rule_ids=body.rule_ids)
+    return RegistryDecisionResponse(
+        action=decision.action.value,
+        rule_id=decision.rule_id,
+        reason=decision.reason,
+        metadata=dict(decision.metadata),
+        contributing_rule_ids=list(decision.contributing_rule_ids),
+    )

@@ -810,14 +810,25 @@ class WorkflowScheduler:
           the caller can feed them into the approval gate.
         - ``ALLOW`` and ``ABSTAIN`` are no-ops: the scheduler proceeds.
         """
+        from app.safety.audit import record_decision
         from app.safety.context import PolicyContext
         from app.safety.decision import DecisionAction
         from app.safety.registry import PolicyRegistry
         from app.safety.registry import evaluate as policy_evaluate
+        from app.services.identity_service import get_instance_key_store
 
         # Fast path: nothing registered → skip the overhead entirely.
         if not PolicyRegistry.all():
             return []
+
+        # Grab the instance keypair once — each non-abstain decision
+        # gets persisted as a signed audit record. If signing is
+        # unavailable, evaluation still runs; we just lose that record.
+        try:
+            audit_keypair = get_instance_key_store().instance_keypair()
+        except Exception as exc:
+            logger.warning("policy_audit_keypair_unavailable", error=str(exc))
+            audit_keypair = None
 
         escalated: list[DAGNode] = []
         for node in active_nodes:
@@ -846,6 +857,14 @@ class WorkflowScheduler:
                     error=str(exc),
                 )
                 continue
+
+            if audit_keypair is not None:
+                await record_decision(
+                    session=self.session,
+                    keypair=audit_keypair,
+                    decision=decision,
+                    ctx=ctx,
+                )
 
             if decision.action is DecisionAction.DENY:
                 logger.info(
