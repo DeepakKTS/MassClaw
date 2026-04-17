@@ -95,7 +95,9 @@ jobs:
 
       - name: Run tests
         working-directory: backend
-        run: pytest tests/unit/ tests/integration/ -v --tb=short -x
+        # Removed -x so a single failure doesn't mask the rest of the suite —
+        # we'd rather see every break in one CI run than chase them one at a time.
+        run: pytest tests/unit/ tests/integration/ -v --tb=short
 
   frontend:
     name: Frontend

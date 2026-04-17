@@ -1,11 +1,11 @@
 name: Deploy (Fly.io × 3 regions)
 
-# Deploys MassClaw to the three Fly.io regional apps (us, eu, ap) on every
-# push to main — but only after CI green-lights the build. Each region runs
-# its own Postgres + Redis (configured via `fly secrets`), so the three
-# deployments are independent failure domains.
+# Deploys MassClaw to the three Fly.io regional apps (us, eu, ap) after the
+# main CI workflow completes successfully on main. Each region runs its own
+# Postgres + Redis (configured via `fly secrets`), so the three deployments
+# are independent failure domains.
 #
-# Required repository secrets:
+# Required repository secrets (set via Settings → Secrets → Actions):
 #   FLY_API_TOKEN_US   — per-app deploy token from `fly tokens create deploy --app massclaw-us`
 #   FLY_API_TOKEN_EU   — same for massclaw-eu
 #   FLY_API_TOKEN_AP   — same for massclaw-ap
@@ -15,46 +15,46 @@ name: Deploy (Fly.io × 3 regions)
 # whole fleet.
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    paths:
-      - "backend/**"
-      - "deploy/fly/**"
-      - ".github/workflows/deploy-fly.yml"
   workflow_dispatch:
 
 concurrency:
   group: fly-deploy
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
-  # Re-run the backend CI job before deploying so a broken push never
-  # reaches production. The CI workflow name must match what ci.yml sets.
-  wait_for_ci:
-    name: Wait for CI
+  # Only proceed when the CI workflow finished successfully. `workflow_run`
+  # fires on every CI completion (success OR failure), so this gate is
+  # essential — otherwise we'd deploy broken code whenever tests fail.
+  gate:
+    name: Wait for CI success
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Wait for backend CI to succeed on this SHA
-        uses: fountainhead/action-wait-for-check@v1.2.0
-        id: wait
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          checkName: Backend
-          ref: ${{ github.sha }}
-          timeoutSeconds: 1800
-          intervalSeconds: 15
-      - name: Fail fast if CI did not succeed
-        if: steps.wait.outputs.conclusion != 'success'
-        run: exit 1
+      - name: Record reason for deploy
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch"
+          else
+            echo "CI run ${{ github.event.workflow_run.id }} succeeded on ${{ github.event.workflow_run.head_sha }}"
+          fi
 
   deploy-us:
     name: Deploy → massclaw-us
-    needs: wait_for_ci
+    needs: gate
     runs-on: ubuntu-latest
     environment: production-us
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Skip if no Fly token configured
         id: guard
         run: |
@@ -74,11 +74,13 @@ jobs:
 
   deploy-eu:
     name: Deploy → massclaw-eu
-    needs: wait_for_ci
+    needs: gate
     runs-on: ubuntu-latest
     environment: production-eu
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Skip if no Fly token configured
         id: guard
         run: |
@@ -98,11 +100,13 @@ jobs:
 
   deploy-ap:
     name: Deploy → massclaw-ap
-    needs: wait_for_ci
+    needs: gate
     runs-on: ubuntu-latest
     environment: production-ap
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Skip if no Fly token configured
         id: guard
         run: |

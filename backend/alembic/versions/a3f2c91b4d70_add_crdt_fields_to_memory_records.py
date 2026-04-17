@@ -13,7 +13,7 @@ Adds:
   canonical read query (active records per workflow, newest first).
 
 Revision ID: a3f2c91b4d70
-Revises: 143775d9233d
+Revises: f6627d0bed1b
 Create Date: 2026-04-21 00:00:00.000000
 
 """
@@ -26,7 +26,11 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "a3f2c91b4d70"
-down_revision: str | Sequence[str] | None = "143775d9233d"
+# The real head before this migration is f6627d0bed1b (add_agent_protocol_type),
+# which itself descends from the 1835c0436189 merge node that unified the wallet
+# and intelligence branches. Pointing our down_revision at 143775d9233d would
+# fork the chain and produce "Multiple head revisions" at upgrade time.
+down_revision: str | Sequence[str] | None = "f6627d0bed1b"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
