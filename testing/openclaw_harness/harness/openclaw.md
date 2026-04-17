@@ -198,7 +198,11 @@ To see each node's current Merkle summary (a 256-bucket fingerprint of its memor
 GET http://localhost:18001/api/v1/memory/sync/summary
 ```
 
-Requires peer-auth headers (`X-Peer-DID`, `X-Peer-Timestamp`, `X-Peer-Signature`). If you are a peer of MassClaw rather than a client, generate an Ed25519 keypair, sign `<unix-ts>|GET|/api/v1/memory/sync/summary`, and send the three headers. Otherwise, for client-side convergence checking, you can just poll the same endpoint on each of the three ports (18001, 18002, 18003) and compare the `root` fields — if all three match, the network is converged.
+**Two ways to call this, depending on who you are:**
+
+- **As a client (e.g., a stock OpenClaw agent or a judge checking convergence)**: when the node runs with `MASSCLAW_DEMO_MODE=true` (true in all local and demo deployments), send no auth headers at all — the endpoint accepts the request as a read-only convergence probe. Poll each of the three ports (18001, 18002, 18003) and compare the `root` fields — if all three match, the network is converged. Only the `summary` endpoint is anonymous; `buckets` and `fetch` always require peer signing.
+
+- **As a peer node (exchanging gossip, fetching records)**: generate an Ed25519 keypair, sign `<unix-ts>|GET|/api/v1/memory/sync/summary`, and send `X-Peer-DID`, `X-Peer-Timestamp`, `X-Peer-Signature` headers. Required for `buckets/{i}` and the POST `fetch` endpoint — those expose record content.
 
 To test the federation lives up to its promise, use the demo endpoints (only available when `MASSCLAW_DEMO_MODE=true`):
 

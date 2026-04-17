@@ -95,6 +95,24 @@ node_env() {
     c) data_idx=12; celery_idx=15 ;;
   esac
 
+  # Pull ANTHROPIC_API_KEY / OPENAI_API_KEY / BRAVE_SEARCH_API_KEY / etc. from
+  # backend/.env if the launching shell doesn't already have them. This keeps
+  # the federation's LLM planners working without forcing the operator to
+  # manually export the keys before `make fed-native-up`.
+  local env_file="$REPO_ROOT/backend/.env"
+  local anthropic_key="${ANTHROPIC_API_KEY:-}"
+  local openai_key="${OPENAI_API_KEY:-}"
+  local brave_key="${BRAVE_SEARCH_API_KEY:-}"
+  if [ -z "$anthropic_key" ] && [ -f "$env_file" ]; then
+    anthropic_key=$(grep -E '^ANTHROPIC_API_KEY=' "$env_file" | head -1 | cut -d= -f2-)
+  fi
+  if [ -z "$openai_key" ] && [ -f "$env_file" ]; then
+    openai_key=$(grep -E '^OPENAI_API_KEY=' "$env_file" | head -1 | cut -d= -f2-)
+  fi
+  if [ -z "$brave_key" ] && [ -f "$env_file" ]; then
+    brave_key=$(grep -E '^BRAVE_SEARCH_API_KEY=' "$env_file" | head -1 | cut -d= -f2-)
+  fi
+
   cat <<EOF
 export DATABASE_URL="postgresql+asyncpg://massclaw:massclaw@localhost:5432/${db}"
 export DATABASE_SYNC_URL="postgresql://massclaw:massclaw@localhost:5432/${db}"
@@ -104,8 +122,9 @@ export CELERY_RESULT_BACKEND="redis://localhost:6379/${celery_idx}"
 export AUTH_REQUIRED="false"
 export LOG_LEVEL="INFO"
 export LOG_FORMAT="console"
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+export ANTHROPIC_API_KEY="${anthropic_key}"
+export OPENAI_API_KEY="${openai_key}"
+export BRAVE_SEARCH_API_KEY="${brave_key}"
 export EMBEDDING_MODEL="all-MiniLM-L6-v2"
 export JWT_SECRET_KEY="federation-demo-not-for-production"
 export IDENTITY_KEY_ENCRYPTION_KEY="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"

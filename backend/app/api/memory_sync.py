@@ -30,7 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.core.logging import get_logger
 from app.core.redis import get_redis
-from app.crdt.peer_auth import VerifiedPeer, require_verified_peer
+from app.crdt.peer_auth import (
+    VerifiedPeer,
+    require_verified_peer,
+    require_verified_peer_or_demo,
+)
 from app.crdt.sync import SyncService, TooManyHashesRequested
 from app.schemas.memory import MemoryResponse
 
@@ -50,7 +54,7 @@ async def get_sync_summary(
     ),
     session: AsyncSession = Depends(get_db_session),
     redis: aioredis.Redis = Depends(get_redis),
-    peer: VerifiedPeer = Depends(require_verified_peer),
+    peer: VerifiedPeer = Depends(require_verified_peer_or_demo),
 ) -> dict[str, Any]:
     """Return the Merkle fingerprint of this node's ACTIVE signed records.
 
@@ -58,6 +62,16 @@ async def get_sync_summary(
     in sync. If they differ, inspect ``buckets[i]`` — the bucket indices
     whose digest differs are the ones worth pulling via
     ``GET /sync/buckets/{index}`` and then ``POST /sync/fetch``.
+
+    **Authentication.** Peer nodes must send ``X-Peer-DID``,
+    ``X-Peer-Timestamp``, and ``X-Peer-Signature`` (Ed25519 over
+    ``<ts>|GET|<path>``). When the node runs with ``MASSCLAW_DEMO_MODE=true``
+    *and* the caller omits all three headers, the endpoint accepts
+    the request anonymously as a read-only convergence probe — a stock
+    OpenClaw client (which has no peer keypair) can then confirm the
+    three federation nodes agree by polling each host port and comparing
+    ``root`` fields. Only the summary is demo-anonymous; ``/buckets`` and
+    ``/fetch`` still require a signed peer.
 
     **Response**
 

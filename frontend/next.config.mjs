@@ -12,6 +12,14 @@ const nextConfig = {
         source: "/ws/:path*",
         destination: `${backendUrl}/ws/:path*`,
       },
+      {
+        source: "/system/:path*",
+        destination: `${backendUrl}/system/:path*`,
+      },
+      {
+        source: "/.well-known/:path*",
+        destination: `${backendUrl}/.well-known/:path*`,
+      },
     ];
   },
 };

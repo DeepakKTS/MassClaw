@@ -197,3 +197,44 @@ async def require_verified_peer(
         timestamp=x_peer_timestamp,
         signature=x_peer_signature,
     )
+
+
+ANONYMOUS_DEMO_DID = "did:demo:anonymous-read"
+
+
+async def require_verified_peer_or_demo(
+    request: Request,
+    x_peer_did: str | None = Header(default=None, alias=PEER_DID_HEADER),
+    x_peer_timestamp: str | None = Header(default=None, alias=PEER_TS_HEADER),
+    x_peer_signature: str | None = Header(default=None, alias=PEER_SIG_HEADER),
+) -> VerifiedPeer:
+    """Same as :func:`require_verified_peer`, but when the node is in demo
+    mode AND the caller provided NO peer-auth headers, accepts the request
+    as an anonymous read.
+
+    This exists so that a stock OpenClaw agent (which has no Ed25519 key
+    material) can still verify the three nodes are federation-converged
+    by polling ``/memory/sync/summary`` on each host port and comparing
+    the returned ``root`` fields. The summary exposes only a Merkle root
+    + a count + per-bucket digests — it reveals no record content, so
+    making it publicly readable in demo mode leaks nothing sensitive.
+
+    Buckets + fetch endpoints continue to require real peer-auth because
+    those DO expose record content.
+
+    When headers ARE provided they are still validated — a stock agent
+    that happens to hold a valid peer key gets the same identity checks
+    as a full peer.
+    """
+    settings = get_settings()
+    demo_mode = bool(getattr(settings, "massclaw_demo_mode", False))
+    no_headers = not (x_peer_did or x_peer_timestamp or x_peer_signature)
+    if demo_mode and no_headers:
+        return VerifiedPeer(did=ANONYMOUS_DEMO_DID, timestamp=int(time.time()))
+    return verify_peer_request(
+        method=request.method,
+        path=request.url.path,
+        did=x_peer_did,
+        timestamp=x_peer_timestamp,
+        signature=x_peer_signature,
+    )
