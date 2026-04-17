@@ -130,12 +130,7 @@ class WebSearchTool(ToolProvider):
         for i, item in enumerate(hits[:count], start=1):
             title = item.get("title") or item.get("metadata", {}).get("title", "(no title)")
             url = item.get("url") or item.get("sourceURL") or ""
-            description = (
-                item.get("description")
-                or item.get("snippet")
-                or item.get("markdown", "")[:200]
-                or ""
-            )
+            description = item.get("description") or item.get("snippet") or item.get("markdown", "")[:200] or ""
             lines.append(f"{i}. {title}\n   URL: {url}\n   {description}\n")
 
         return ToolResult(
