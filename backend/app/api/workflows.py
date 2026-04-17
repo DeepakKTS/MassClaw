@@ -539,16 +539,19 @@ async def _resume_run_background(workflow_id: str) -> None:
     from app.core.logging import get_logger
 
     logger = get_logger("workflow_resume_bg")
+    logger.info("resume_workflow_background_entered", workflow_id=workflow_id)
 
     async def _run() -> None:
         from app.core.redis import get_redis_manager
         from app.models.workflow import Workflow as WfModel
-        from app.orchestration.agent_selector import AgentSelector
         from app.orchestration.dag import DAG
         from app.orchestration.scheduler import SchedulerPausedForApproval, WorkflowScheduler
+        from app.orchestration.selector import AgentSelector
 
         redis = get_redis_manager().get_cache_client()
+        logger.info("resume_workflow_session_opening", workflow_id=workflow_id)
         async with db_session_context() as session:
+            logger.info("resume_workflow_session_opened", workflow_id=workflow_id)
             result = await session.execute(select(WfModel).where(WfModel.workflow_id == workflow_id))
             workflow = result.scalar_one_or_none()
             if workflow is None or not workflow.dag_snapshot:
@@ -570,6 +573,12 @@ async def _resume_run_background(workflow_id: str) -> None:
 
             workflow.status = WorkflowStatus.RUNNING
             await session.commit()
+            logger.info(
+                "resume_workflow_running_committed",
+                workflow_id=workflow_id,
+                ready_nodes=[n.node_id for n in dag.get_ready_nodes()][:5],
+                total_nodes=len(dag.nodes),
+            )
 
             scheduler = WorkflowScheduler(session=session, redis=redis)
             try:

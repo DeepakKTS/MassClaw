@@ -147,4 +147,10 @@ class TestFederatedApprovalRoundTrip:
         assert only_a[0].workflow_id == str(wf_a)
 
         all_pending = await store.get_pending()
-        assert {r.workflow_id for r in all_pending} == {str(wf_a), str(wf_b)}
+        # CI + dev share the same Postgres; other tests / manual curls
+        # may have left pending records behind. Assert both seeded
+        # workflows are present rather than requiring exact-set
+        # equality, which would couple tests to global DB state.
+        pending_workflow_ids = {r.workflow_id for r in all_pending}
+        assert str(wf_a) in pending_workflow_ids
+        assert str(wf_b) in pending_workflow_ids

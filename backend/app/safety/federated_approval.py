@@ -245,15 +245,38 @@ class FederatedApprovalStore:
         workflow_id: uuid.UUID,
         node_id: str,
     ) -> ApprovalRequest | None:
-        """Scheduler-on-resume helper: has this (workflow, node) been decided?"""
+        """Scheduler-on-resume helper: has this (workflow, node) been decided?
+
+        Request records carry ``approval_node_id`` in metadata (the scheduler
+        writes them with the triggering DAG node). Decision records are
+        written by :class:`ApprovalManager` without a node_id — they only
+        know the ``request_id``. We join request ↔ decision by request_id
+        to return the final decision for the pair.
+        """
         workflow_id_str = str(workflow_id)
+        # First pass: find the request record that matches (workflow, node)
+        # and pick up its request_id.
+        matching_request_ids: set[str] = set()
+        decisions_by_request: dict[str, ApprovalRequest] = {}
         for record in await self._scan():
             req = _decode_record(record)
-            if req is None or req.status == "pending":
+            if req is None:
                 continue
             if req.workflow_id != workflow_id_str:
                 continue
-            if _record_node_id(record) != node_id:
-                continue
-            return req
+            if req.status == "pending":
+                if _record_node_id(record) == node_id:
+                    matching_request_ids.add(req.request_id)
+            else:
+                # Decision records may not have node_id — index by request_id.
+                decisions_by_request.setdefault(req.request_id, req)
+                # Some decision records also carry node_id (legacy /
+                # scheduler-driven writes); accept a direct match.
+                if _record_node_id(record) == node_id:
+                    return req
+        # Second pass: return the decision for any request that matched.
+        for rid in matching_request_ids:
+            decided = decisions_by_request.get(rid)
+            if decided is not None:
+                return decided
         return None

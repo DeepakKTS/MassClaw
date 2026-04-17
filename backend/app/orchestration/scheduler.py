@@ -383,6 +383,17 @@ class WorkflowScheduler:
                 from app.safety.federated_approval import FederatedApprovalStore
                 from app.services.identity_service import get_instance_key_store
 
+                # Commit the main session's pending writes (Phase 1 task rows,
+                # wallet reservations, workflow.status=RUNNING flush) BEFORE
+                # opening any satellite session. Without this commit, the main
+                # session's row locks on the workflows table block the
+                # satellite session's FK check when it INSERTs a memory_record
+                # that references the workflow — a write-then-wait deadlock
+                # that silently stalls the scheduler at the approval gate.
+                # expire_on_commit=False on the session factory keeps the
+                # workflow ORM object live after commit.
+                await self.session.commit()
+
                 approval_mgr = ApprovalManager(get_redis_manager().get_cache_client())
                 keypair = get_instance_key_store().instance_keypair()
 
@@ -439,6 +450,14 @@ class WorkflowScheduler:
                     # here would leave the checkpoint inside the scheduler's
                     # long-lived transaction, invisible to a peer node's
                     # /resume call.
+                    #
+                    # Reset this node to PENDING in the snapshot so that
+                    # on resume, ``dag.get_ready_nodes()`` picks it up
+                    # again. Phase 1 mark_running leaves it as RUNNING,
+                    # but a RUNNING node is ignored by the ready-check
+                    # and the resumed scheduler would exit immediately
+                    # with no ready work.
+                    dag.mark_pending(node.node_id)
                     checkpoint_hash: str | None = None
                     try:
                         async with _approval_session_ctx() as cp_session:
