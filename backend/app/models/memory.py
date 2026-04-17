@@ -34,10 +34,15 @@ class MemoryRecord(Base):
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    # Nullable: the semantic cache writes cross-workflow entries with
+    # workflow_id=None so a cache hit can serve any future workflow.
+    # Workflow-scoped records (task outputs, checkpoints, audit) still
+    # set workflow_id explicitly, and CASCADE still cleans them when
+    # their owning workflow is deleted.
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("workflows.workflow_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     source_agent_id: Mapped[uuid.UUID | None] = mapped_column(
