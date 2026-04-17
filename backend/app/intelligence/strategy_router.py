@@ -72,7 +72,7 @@ class StrategyRouter:
 
         actual_cost = tokens_to_credits(response.cost)
         if actual_cost > 0:
-            await WalletService(self.session).record_internal_cost(
+            await WalletService(self.session, self.redis).record_internal_cost(
                 workflow_id=workflow.workflow_id,
                 amount=actual_cost,
                 reason="direct_response synthesis cost",
@@ -196,7 +196,7 @@ class StrategyRouter:
         if total_cost > 0:
             from app.services.wallet_service import WalletService
 
-            await WalletService(self.session).record_internal_cost(
+            await WalletService(self.session, self.redis).record_internal_cost(
                 workflow_id=workflow.workflow_id,
                 amount=total_cost,
                 reason=f"iterative execution over {iteration} iterations",
