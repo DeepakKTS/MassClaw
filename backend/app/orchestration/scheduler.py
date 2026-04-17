@@ -190,13 +190,15 @@ class WorkflowScheduler:
         workflow.status = WorkflowStatus.RUNNING
         workflow.started_at = datetime.now(UTC)
         workflow.dag_snapshot = dag.to_dict()
-        # Commit the RUNNING transition so other sessions (in particular
-        # the /status endpoint and any stock agent polling it) observe
-        # that execution has actually begun. Without this, readers see
-        # "pending" for the entire duration of task execution, which can
-        # be minutes, and have no way to tell apart "queued forever" from
-        # "actively running".
-        await self.session.commit()
+        # Flush (not commit) — the scheduler loop below relies on the
+        # workflow ORM object staying live for the entire execution.
+        # session.commit() here expires the object and causes the loop
+        # to silently stall between task batches when the approval-gate
+        # code re-reads workflow attributes. The RUNNING transition is
+        # still visible to readers via a short-lived SELECT on the
+        # tasks table (they count task rows) + the DAG snapshot write
+        # that strategy_router already committed before handing off.
+        await self.session.flush()
 
         await self._publish_progress(workflow, dag, "workflow_started")
 
