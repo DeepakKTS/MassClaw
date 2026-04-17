@@ -152,18 +152,23 @@ class TestWebSearchTool:
     async def test_search_no_api_key(self, tool_context: ToolContext):
         mock_settings = MagicMock()
         mock_settings.brave_search_api_key = ""
+        mock_settings.firecrawl_api_key = ""
         with patch("app.tools.web_search.get_settings", return_value=mock_settings):
             result: ToolResult = await self.tool.execute({"query": "hello world"}, tool_context)
         assert result.success is False
-        assert "BRAVE_SEARCH_API_KEY" in result.content
+        # Error message must reference at least one of the supported providers
+        # so the agent's LLM can reason about what's missing.
+        assert "FIRECRAWL_API_KEY" in result.content or "BRAVE_SEARCH_API_KEY" in result.content
 
-    async def test_search_success(self, tool_context: ToolContext):
+    async def test_search_firecrawl_success(self, tool_context: ToolContext):
+        """Firecrawl is the primary provider and is preferred when its key is set."""
         mock_settings = MagicMock()
-        mock_settings.brave_search_api_key = "test-key-123"
+        mock_settings.brave_search_api_key = ""
+        mock_settings.firecrawl_api_key = "fc-test-key"
 
         fake_response_data: dict[str, Any] = {
-            "web": {
-                "results": [
+            "data": {
+                "web": [
                     {
                         "title": "MassClaw Project",
                         "url": "https://example.com/massclaw",
@@ -173,6 +178,46 @@ class TestWebSearchTool:
                         "title": "Another Result",
                         "url": "https://example.com/other",
                         "description": "Second search result.",
+                    },
+                ]
+            }
+        }
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = fake_response_data
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            patch("app.tools.web_search.get_settings", return_value=mock_settings),
+            patch("app.tools.web_search.httpx.AsyncClient", return_value=mock_client),
+        ):
+            result: ToolResult = await self.tool.execute({"query": "MassClaw AI"}, tool_context)
+
+        assert result.success is True
+        assert "MassClaw Project" in result.content
+        assert "https://example.com/massclaw" in result.content
+        assert result.metadata["count"] == 2
+        assert result.metadata["provider"] == "firecrawl"
+
+    async def test_search_brave_fallback_success(self, tool_context: ToolContext):
+        """When only Brave key is set, legacy Brave path runs."""
+        mock_settings = MagicMock()
+        mock_settings.brave_search_api_key = "test-key-123"
+        mock_settings.firecrawl_api_key = ""
+
+        fake_response_data: dict[str, Any] = {
+            "web": {
+                "results": [
+                    {
+                        "title": "MassClaw Project",
+                        "url": "https://example.com/massclaw",
+                        "description": "Decentralized AI agent infrastructure.",
                     },
                 ]
             }
@@ -195,12 +240,12 @@ class TestWebSearchTool:
 
         assert result.success is True
         assert "MassClaw Project" in result.content
-        assert "https://example.com/massclaw" in result.content
-        assert result.metadata["count"] == 2
+        assert result.metadata["provider"] == "brave"
 
     async def test_search_missing_query(self, tool_context: ToolContext):
         mock_settings = MagicMock()
         mock_settings.brave_search_api_key = "test-key"
+        mock_settings.firecrawl_api_key = ""
         with patch("app.tools.web_search.get_settings", return_value=mock_settings):
             result: ToolResult = await self.tool.execute({}, tool_context)
         assert result.success is False
