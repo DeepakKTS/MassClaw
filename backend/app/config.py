@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     tool_code_disk_mb: int = 100  # Max tmpfs disk for code execution
     tool_workspace_base: str = "/tmp/massclaw/workspaces"
     brave_search_api_key: str = ""
+    firecrawl_api_key: str = ""
     tool_docker_image: str = "python:3.12-slim"
 
     # Agent Protocol

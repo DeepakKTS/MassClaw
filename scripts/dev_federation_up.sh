@@ -103,6 +103,7 @@ node_env() {
   local anthropic_key="${ANTHROPIC_API_KEY:-}"
   local openai_key="${OPENAI_API_KEY:-}"
   local brave_key="${BRAVE_SEARCH_API_KEY:-}"
+  local firecrawl_key="${FIRECRAWL_API_KEY:-}"
   if [ -z "$anthropic_key" ] && [ -f "$env_file" ]; then
     anthropic_key=$(grep -E '^ANTHROPIC_API_KEY=' "$env_file" | head -1 | cut -d= -f2-)
   fi
@@ -111,6 +112,9 @@ node_env() {
   fi
   if [ -z "$brave_key" ] && [ -f "$env_file" ]; then
     brave_key=$(grep -E '^BRAVE_SEARCH_API_KEY=' "$env_file" | head -1 | cut -d= -f2-)
+  fi
+  if [ -z "$firecrawl_key" ] && [ -f "$env_file" ]; then
+    firecrawl_key=$(grep -E '^FIRECRAWL_API_KEY=' "$env_file" | head -1 | cut -d= -f2-)
   fi
 
   cat <<EOF
@@ -125,6 +129,7 @@ export LOG_FORMAT="console"
 export ANTHROPIC_API_KEY="${anthropic_key}"
 export OPENAI_API_KEY="${openai_key}"
 export BRAVE_SEARCH_API_KEY="${brave_key}"
+export FIRECRAWL_API_KEY="${firecrawl_key}"
 export EMBEDDING_MODEL="all-MiniLM-L6-v2"
 export JWT_SECRET_KEY="federation-demo-not-for-production"
 export IDENTITY_KEY_ENCRYPTION_KEY="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
