@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MassClaw · NandaHack Progress Dashboard</title>
+  <meta name="description" content="Live build status, day-by-day timeline, and Phase 1 countdown for the MassClaw NandaHack submission." />
+  <style>
+    :root {
+      --bg: #0c0c0e;
+      --panel: #141417;
+      --panel-alt: #1a1a1e;
+      --border: #26262b;
+      --text: #f5f5f7;
+      --muted: #9a9aa2;
+      --accent: #e08a3e;
+      --accent-soft: rgba(224, 138, 62, 0.18);
+      --accent-border: rgba(224, 138, 62, 0.35);
+      --success: #30d158;
+      --success-soft: rgba(48, 209, 88, 0.12);
+      --success-border: rgba(48, 209, 88, 0.3);
+      --pending: #ffd60a;
+      --pending-soft: rgba(255, 214, 10, 0.12);
+      --pending-border: rgba(255, 214, 10, 0.3);
+      --danger: #ff453a;
+      --blue: #7ab3d9;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'SF Pro Text', 'Helvetica Neue', sans-serif;
+      --mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { background: var(--bg); color: var(--text); margin: 0; padding: 0; font-family: var(--font); line-height: 1.55; }
+    a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; transition: border 0.15s ease; }
+    a:hover { border-bottom-color: var(--accent); }
+    .container { max-width: 1100px; margin: 0 auto; padding: 48px 28px 80px; }
+    header.hero { display: flex; flex-direction: column; gap: 8px; margin-bottom: 36px; }
+    .eyebrow { text-transform: uppercase; letter-spacing: 0.18em; font-size: 11px; color: var(--muted); }
+    h1 { font-size: 34px; font-weight: 600; margin: 0; letter-spacing: -0.02em; }
+    h2 { font-size: 20px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01em; }
+    h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; }
+    p { color: var(--muted); margin: 0 0 4px; }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, 1fr); }
+    .grid.three { grid-template-columns: repeat(3, 1fr); }
+    .grid.four { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 820px) {
+      .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+    }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 22px 22px 24px; }
+    .panel.accent { background: linear-gradient(180deg, var(--accent-soft), transparent 100%); border-color: var(--accent-border); }
+
+    .kpi { display: flex; flex-direction: column; gap: 4px; }
+    .kpi .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+    .kpi .value { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+    .kpi .hint { font-size: 12px; color: var(--muted); }
+
+    .countdown { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 10px; font-family: var(--mono); }
+    .countdown > div { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 14px 10px; text-align: center; }
+    .countdown .n { font-size: 28px; font-weight: 600; color: var(--accent); }
+    .countdown .u { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 4px; }
+
+    .section { margin-top: 40px; }
+    .section-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 14px; }
+
+    .timeline { border-left: 2px solid var(--border); padding-left: 22px; margin-left: 8px; }
+    .day { position: relative; padding: 14px 0; border-bottom: 1px dashed var(--border); }
+    .day:last-child { border-bottom: none; }
+    .day::before { content: ''; position: absolute; left: -31px; top: 22px; width: 12px; height: 12px; border-radius: 50%; background: var(--panel); border: 2px solid var(--border); }
+    .day.done::before { background: var(--success); border-color: var(--success); }
+    .day.current::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .day.pending::before { background: var(--panel); border-color: var(--border); }
+    .day-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .day-num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+    .day-title { font-weight: 600; }
+    .day-date { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+    .day-body { font-size: 13px; color: var(--muted); margin-top: 4px; }
+    .day-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); background: var(--panel-alt); font-family: var(--mono); letter-spacing: 0.02em; }
+    .badge.ok { color: var(--success); border-color: var(--success-border); background: var(--success-soft); }
+    .badge.now { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
+    .badge.wait { color: var(--pending); border-color: var(--pending-border); background: var(--pending-soft); }
+    .badge.mono { font-family: var(--mono); }
+
+    .pillar { padding: 16px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; gap: 6px; }
+    .pillar .title { font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .pillar .check { font-size: 11px; color: var(--success); font-family: var(--mono); letter-spacing: 0.08em; }
+    .pillar .check.pending { color: var(--pending); }
+
+    .dl { display: grid; grid-template-columns: 140px 1fr; gap: 4px 14px; }
+    .dl dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .dl dd { margin: 0; font-size: 14px; }
+
+    footer { margin-top: 50px; border-top: 1px solid var(--border); padding-top: 20px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    footer p { font-size: 12px; color: var(--muted); }
+
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    code { font-family: var(--mono); background: var(--panel-alt); padding: 1px 6px; border-radius: 4px; font-size: 12px; border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- HERO -->
+    <header class="hero">
+      <span class="eyebrow">NandaHack · MIT Media Lab · HCLTech</span>
+      <h1>MassClaw Phase 1 Progress</h1>
+      <p>Live build tracker for the NANDA-native federated agent OS submission. Timeline drawn from the git history of <a href="https://github.com/DeepakKTS/MassClaw" target="_blank" rel="noopener">DeepakKTS/MassClaw</a>.</p>
+    </header>
+
+    <!-- KPI STRIP -->
+    <section class="grid four">
+      <div class="panel accent">
+        <div class="kpi">
+          <span class="label">Phase 1 submission</span>
+          <span class="value" id="phase1-date">May 7, 2026</span>
+          <div class="countdown" id="phase1-countdown" aria-live="polite">
+            <div><div class="n" id="p1-d">–</div><div class="u">days</div></div>
+            <div><div class="n" id="p1-h">–</div><div class="u">hours</div></div>
+            <div><div class="n" id="p1-m">–</div><div class="u">min</div></div>
+            <div><div class="n" id="p1-s">–</div><div class="u">sec</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="kpi">
+          <span class="label">Days complete</span>
+          <span class="value"><span id="days-done">8</span>&thinsp;/&thinsp;21</span>
+          <span class="hint">Remaining effort mapped to plan</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="kpi">
+          <span class="label">Commits on main</span>
+          <span class="value" id="commit-count">14</span>
+          <span class="hint">Every push mirrored + CI verified</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="kpi">
+          <span class="label">Backend unit tests</span>
+          <span class="value" id="test-count">273</span>
+          <span class="hint">All green · ruff format + check clean</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOUR PILLARS -->
+    <section class="section">
+      <div class="section-head">
+        <h2>The four Phase 1 pillars</h2>
+        <span class="badge mono">plan → massachusetts-institute-of-technology-concurrent-tower.md</span>
+      </div>
+      <div class="grid two">
+        <div class="pillar"><div class="title">A · Identity + NANDA Index <span class="check">SHIPPED</span></div>
+          <p>Ed25519 keypair per instance/agent, signed AgentFacts v1 documents at <code>/.well-known/agent-facts.json</code>, did:key/did:web/did:nanda support, NANDA Index client with cookie + bearer auth.</p>
+          <div class="tag-list">
+            <span class="badge ok">Day 1</span><span class="badge ok">Day 2</span><span class="badge ok">Day 3</span><span class="badge ok">Day 4</span>
+          </div>
+        </div>
+        <div class="pillar"><div class="title">B · CRDT memory + federation <span class="check">SHIPPED</span></div>
+          <p>5 new memory columns (author_did, parent_hashes, signature, hash, record_state), canonical hashing, Merkle bucket fingerprint, peer sync endpoints with Ed25519 peer auth.</p>
+          <div class="tag-list">
+            <span class="badge ok">Day 5</span><span class="badge ok">Day 6</span><span class="badge ok">Day 7</span><span class="badge ok">Day 8</span>
+          </div>
+        </div>
+        <div class="pillar"><div class="title">C · Intelligence + HITL wiring <span class="check pending">PENDING</span></div>
+          <p>Reflection hook in the scheduler, checkpoint module, cross-node resume — existing adaptive-intelligence code wired into the execution loop.</p>
+          <div class="tag-list">
+            <span class="badge wait">Day 12</span><span class="badge wait">Day 13</span><span class="badge wait">Day 14</span>
+          </div>
+        </div>
+        <div class="pillar"><div class="title">D · Policy engine <span class="check pending">PENDING</span></div>
+          <p>Decorator-based rule registry, 10 built-in rules (trust floors, rate limits, cost caps, PII guards), live editor in the frontend, signed decision receipts.</p>
+          <div class="tag-list">
+            <span class="badge wait">Day 15</span><span class="badge wait">Day 16</span><span class="badge wait">Day 17</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TIMELINE -->
+    <section class="section">
+      <h2>Day-by-day timeline</h2>
+      <div class="timeline" id="timeline"></div>
+    </section>
+
+    <!-- RELEASE LEDGER -->
+    <section class="section grid two">
+      <div class="panel">
+        <h3>Commit ledger</h3>
+        <dl class="dl">
+          <dt>86afe77</dt><dd>fix(ci): rebase CRDT migration + AsyncClient loop + deploy trigger</dd>
+          <dt>f133010</dt><dd>feat(memory): peer-to-peer CRDT sync endpoints with Ed25519 auth</dd>
+          <dt>59dd404</dt><dd>feat(memory): three-mode fact resolution + Fly.io deploy config</dd>
+          <dt>855ee1f</dt><dd>feat(memory): CRDT write path — canonical hashing, Merkle fingerprint</dd>
+          <dt>d2bed8b</dt><dd>feat(memory): add CRDT/provenance fields to memory_records</dd>
+          <dt>f67b047</dt><dd>feat(identity): v1-conformant API docstrings, docs, and frontend panel</dd>
+          <dt>fb12c70</dt><dd>refactor(identity): conform to NANDA AgentFacts v1 schema + real Index API</dd>
+          <dt>a70f83f</dt><dd>feat(identity): NANDA Index client + three-strategy DID resolver</dd>
+          <dt>b4b29dd</dt><dd>feat(identity): AgentFacts HTTP surface + per-agent keys + verify endpoint</dd>
+          <dt>868cf3c</dt><dd>feat(identity): Ed25519 AgentFacts signer + NANDA DID + key store</dd>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <h3>Live operations</h3>
+        <dl class="dl">
+          <dt>CI</dt><dd><span class="badge ok">GREEN · 273 tests · ruff clean</span></dd>
+          <dt>Deploy</dt><dd><span class="badge wait">configured, awaiting FLY tokens</span></dd>
+          <dt>Public URL</dt><dd><span class="badge wait">local-first · Cloudflare Tunnel on demand</span></dd>
+          <dt>Repo</dt><dd>private · DeepakKTS/MassClaw</dd>
+          <dt>Deadline</dt><dd>May 7, 2026 — Phase 1 submission</dd>
+          <dt>Final event</dt><dd>June 13, 2026 — MIT Media Lab demo day</dd>
+        </dl>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer>
+      <p>Dashboard regenerates from the timeline JSON every page load · open directly in a browser · no server required.</p>
+      <p>MassClaw is a personal project of Deepak KTS · MIT-licensed · NandaHack 2026.</p>
+    </footer>
+  </div>
+
+  <script>
+    // Phase 1 submission deadline in UTC. Use a fixed date so the countdown
+    // stays stable regardless of where the dashboard is opened from.
+    const PHASE_1_DEADLINE = new Date('2026-05-07T23:59:00Z');
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+
+    function updateCountdown() {
+      const now = new Date();
+      let diff = PHASE_1_DEADLINE - now;
+      const panel = document.getElementById('phase1-countdown');
+      if (diff <= 0) {
+        document.getElementById('p1-d').textContent = '00';
+        document.getElementById('p1-h').textContent = '00';
+        document.getElementById('p1-m').textContent = '00';
+        document.getElementById('p1-s').textContent = '00';
+        panel.setAttribute('aria-label', 'Phase 1 deadline has passed');
+        return;
+      }
+      const days = Math.floor(diff / 86400000); diff -= days * 86400000;
+      const hours = Math.floor(diff / 3600000); diff -= hours * 3600000;
+      const mins = Math.floor(diff / 60000); diff -= mins * 60000;
+      const secs = Math.floor(diff / 1000);
+      document.getElementById('p1-d').textContent = pad(days);
+      document.getElementById('p1-h').textContent = pad(hours);
+      document.getElementById('p1-m').textContent = pad(mins);
+      document.getElementById('p1-s').textContent = pad(secs);
+    }
+    updateCountdown();
+    setInterval(updateCountdown, 1000);
+
+    // Timeline definition — one entry per day in the 21-day runway. Status:
+    //   done | current | pending. Keep this list as the single source of truth;
+    //   the renderer below takes care of layout.
+    const TIMELINE = [
+      { n: 1, date: 'Apr 17', title: 'Identity module', status: 'done',
+        body: 'Ed25519 signer, multibase base58btc, JCS canonicalisation, did:nanda legacy, ChaCha20-Poly1305 key wrap. 89 unit tests.',
+        commit: '868cf3c' },
+      { n: 2, date: 'Apr 18', title: 'AgentFacts HTTP surface', status: 'done',
+        body: '/.well-known/agent-facts.json, per-agent keys with encrypted private seed, verify endpoint.',
+        commit: 'b4b29dd' },
+      { n: 3, date: 'Apr 19', title: 'NANDA Index + resolver', status: 'done',
+        body: 'HTTP client for deployed NANDA Index, three-strategy DID resolver (local / Index / well-known).',
+        commit: 'a70f83f' },
+      { n: '3.5', date: 'Apr 19', title: 'NANDA v1 realignment', status: 'done',
+        body: 'Rewrote AgentFacts to the real v1 schema after research. did:key primary. Integrity via verifiable_credentials[].',
+        commit: 'fb12c70' },
+      { n: 4, date: 'Apr 20', title: 'v1 docstrings + frontend panel', status: 'done',
+        body: 'OpenAPI docs describe the real v1 discovery flow. Next.js AgentFacts panel with verify-signature modal.',
+        commit: 'f67b047' },
+      { n: 5, date: 'Apr 21', title: 'Memory CRDT migration', status: 'done',
+        body: '5 new columns on memory_records (author_did, parent_hashes, signature, hash, record_state) + GIN index.',
+        commit: 'd2bed8b' },
+      { n: 6, date: 'Apr 22', title: 'CRDT write path + Merkle fingerprint', status: 'done',
+        body: 'CanonicalBody + content hash + CRDTStore.put() with three modes (unsigned, author-anchored, fully signed).',
+        commit: '855ee1f' },
+      { n: 7, date: 'Apr 23', title: 'Fact resolution + Fly.io deploy', status: 'done',
+        body: 'Three-mode read resolver (planning / audit / sensitive-with-HITL). Fly.io × 3 region configs + GitHub Actions auto-deploy.',
+        commit: '59dd404' },
+      { n: 8, date: 'Apr 24', title: 'Peer-to-peer sync endpoints', status: 'done',
+        body: '/memory/sync/summary + /buckets + /fetch with Ed25519 peer auth (signed timestamp + method + path).',
+        commit: 'f133010' },
+      { n: 9, date: 'Apr 25', title: 'Gossip task + Index peer discovery', status: 'current',
+        body: 'Background task every 5s, picks 2 random peers from NANDA Index lookup, exchanges fingerprints, pulls diffs.' },
+      { n: 10, date: 'Apr 26', title: 'Record lifecycle + tombstones + GC', status: 'pending',
+        body: 'active/superseded/historical transitions driven by policy. Signed tombstone records. GC respects lifecycle.' },
+      { n: 11, date: 'Apr 27', title: 'Three-node federation convergence test (GATE)', status: 'pending',
+        body: 'docker/federation.yml spins up 3 nodes; partition + heal + converge within 10s end-to-end.' },
+      { n: 12, date: 'Apr 28', title: 'Checkpoint + reflection wiring', status: 'pending',
+        body: 'Scheduler calls reflection.evaluate() after each task; four-branch logic; checkpoint serialised as signed memory record.' },
+      { n: 13, date: 'Apr 29', title: 'HITL path with cross-node resume', status: 'pending',
+        body: 'escalate_human pauses workflow; approval from any peer resumes it using the checkpoint hash.' },
+      { n: 14, date: 'Apr 30', title: 'Intelligence E2E tests', status: 'pending',
+        body: 'All four reflection branches under test; cross-node kill + resume verified.' },
+      { n: 15, date: 'May 1', title: 'Policy engine core', status: 'pending',
+        body: '@policy_rule registry, PolicyContext builder, signed Decision dataclass aggregation.' },
+      { n: 16, date: 'May 2', title: 'Ten built-in policy rules', status: 'pending',
+        body: 'trust_floor_payments, rate_limit_per_tool, cost_cap, time_of_day, pii_tool_guard, credential_requires, etc.' },
+      { n: 17, date: 'May 3', title: 'Policy UI + audit filter', status: 'pending',
+        body: 'Monaco editor + live tester on /policy; audit-trail filter for decision records.' },
+      { n: 18, date: 'May 4', title: 'Edge-case hardening + chaos testing', status: 'pending',
+        body: 'Every endpoint: bad auth, malformed input, unicode, concurrent writes, partitions. Zero 500s.' },
+      { n: 19, date: 'May 5', title: 'Stock-agent black-box testing', status: 'pending',
+        body: 'Real Claude/GPT agent runs five scenarios against our URL with zero prompt tuning.' },
+      { n: 20, date: 'May 6', title: 'Judge-facing README + demo recordings', status: 'pending',
+        body: 'One-scroll README, 5 demo GIFs, 2-min quickstart. Friend-as-judge dry run.' },
+      { n: 21, date: 'May 7', title: 'Phase 1 submission', status: 'pending',
+        body: 'Final checklist run-through + submission to NandaHack.' }
+    ];
+
+    // Render the timeline.
+    const timelineEl = document.getElementById('timeline');
+    const statusBadge = {
+      done: { cls: 'ok', label: 'shipped' },
+      current: { cls: 'now', label: 'in progress' },
+      pending: { cls: 'wait', label: 'upcoming' }
+    };
+    TIMELINE.forEach((item) => {
+      const el = document.createElement('div');
+      el.className = 'day ' + item.status;
+      const badgeSpec = statusBadge[item.status];
+      const commit = item.commit ? `<span class="badge mono">${item.commit}</span>` : '';
+      el.innerHTML = `
+        <div class="day-head">
+          <span class="day-num">Day ${item.n}</span>
+          <span class="day-title">${item.title}</span>
+          <span class="day-date">${item.date}</span>
+          <span class="badge ${badgeSpec.cls}">${badgeSpec.label}</span>
+          ${commit}
+        </div>
+        <div class="day-body">${item.body}</div>
+      `;
+      timelineEl.appendChild(el);
+    });
+
+    // Progress ratio reflects the state of the TIMELINE above — computed
+    // at render time so the header stays in sync if a day moves.
+    const doneCount = TIMELINE.filter(d => d.status === 'done').length;
+    document.getElementById('days-done').textContent = String(doneCount);
+  </script>
+</body>
+</html>

@@ -26,12 +26,15 @@
 
 ---
 
-MassClaw is an open-source infrastructure platform that enables AI agents to discover each other, build trust, share memory, orchestrate multi-agent workflows, and operate under policy controls — all through real APIs.
+MassClaw is an open-source infrastructure platform that enables AI agents to discover each other, build trust, share memory, orchestrate multi-agent workflows, and operate under policy controls — all through real APIs. **As of April 2026 it is also NANDA-native**: every agent gets a verifiable identity, every memory record is signed and content-addressed, and three-node federation is a first-class feature rather than a future roadmap item.
 
 ## Why MassClaw?
 
 Today's AI applications are single-agent, single-prompt, single-response. MassClaw enables **teams of AI agents** to collaborate like an organization:
 
+- **NANDA Identity** *(new)*: every agent is issued an Ed25519-signed **AgentFacts v1** document and a `did:key:` identifier, discoverable via the MIT NANDA Index or the local well-known URL
+- **CRDT Shared Memory** *(new)*: signed, content-addressed memory records with parent-hash provenance chains; three-mode read resolution (planning / audit / sensitive-with-HITL) turns conflicting writes into explicit outcomes instead of silent last-writer-wins
+- **Federation Sync** *(new)*: peer-to-peer Merkle-summary + bucket + fetch endpoints authenticated by Ed25519 peer signatures; any MassClaw node can reconcile its state with any other
 - **Registry**: Agents register capabilities and get discovered dynamically
 - **Trust**: Bayesian trust scoring with temporal decay — bad agents fade, good ones rise
 - **Memory**: Shared vector memory with semantic search across agent workflows
@@ -44,24 +47,33 @@ Today's AI applications are single-agent, single-prompt, single-response. MassCl
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  External Agents                 │
-│           (OpenClaw, custom agents, etc.)        │
-└───────────────────┬─────────────────────────────┘
-                    │ HTTP/REST
-┌───────────────────▼─────────────────────────────┐
-│                MassClaw API (FastAPI)             │
-├──────────┬──────────┬──────────┬────────────────┤
-│ Registry │  Trust   │  Memory  │  Orchestration │
-│  Layer   │  Layer   │  Layer   │     Layer      │
-├──────────┼──────────┼──────────┼────────────────┤
-│  Wallet  │  Safety  │  Audit   │   Evolution    │
-│  Layer   │  Layer   │  Layer   │     Layer      │
-├──────────┴──────────┴──────────┴────────────────┤
-│           LLM Abstraction (Anthropic/OpenAI)     │
-├─────────────────────────────────────────────────┤
-│        PostgreSQL + pgvector  │  Redis           │
-└─────────────────────────────────────────────────┘
+            NANDA Index (MIT-hosted phonebook for agents)
+                              │
+         ┌────────────────────┼────────────────────┐
+         │                    │                    │
+  MassClaw node-A      MassClaw node-B      MassClaw node-C
+   (region 1)           (region 2)           (region 3)
+         └─── Merkle-sync shared memory ───┘
+              (CRDT, no coordinator, Ed25519 signed)
+
+┌─────────────────────────────────────────────────────┐
+│                 External Agents                      │
+│     (OpenClaw, stock Claude / GPT agents, peers)     │
+└───────────────────────┬─────────────────────────────┘
+                        │ HTTP/REST + MCP
+┌───────────────────────▼─────────────────────────────┐
+│                MassClaw API (FastAPI)                 │
+├──────────┬──────────┬──────────┬──────────┬─────────┤
+│ Identity │ Registry │  Trust   │  Memory  │  Sync   │
+│  (NANDA) │  Layer   │  Layer   │  (CRDT)  │ (peers) │
+├──────────┼──────────┼──────────┼──────────┼─────────┤
+│ Orchestr.│  Wallet  │  Safety  │  Audit   │Evolution│
+│   Layer  │  Layer   │  Layer   │  Layer   │  Layer  │
+├──────────┴──────────┴──────────┴──────────┴─────────┤
+│           LLM Abstraction (Anthropic/OpenAI)          │
+├─────────────────────────────────────────────────────┤
+│        PostgreSQL + pgvector  │  Redis                │
+└─────────────────────────────────────────────────────┘
 ```
 
 ## Quickstart
@@ -148,6 +160,29 @@ Full interactive docs at `http://localhost:8000/docs` (Swagger) or `/redoc` (ReD
 
 ### Key Endpoints
 
+**NANDA identity + discovery** *(new)*
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/.well-known/agent-facts.json` | GET | Signed AgentFacts v1 document for this MassClaw node — stock agent discovery surface |
+| `/api/v1/agents/{id}/agent-facts.json` | GET | Signed AgentFacts for a registered agent |
+| `/api/v1/agents/verify-facts` | POST | Verify a posted AgentFacts document's Ed25519 signature |
+| `/api/v1/identity/resolve` | GET | Resolve any DID (did:key, did:web, did:nanda-legacy) to a verified AgentFacts document |
+
+**CRDT memory + federation** *(new)*
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/memory/write` | POST | Write a memory record (unsigned legacy or Ed25519-signed federation mode) |
+| `/api/v1/memory/query` | POST | Semantic search with CRDT state filters (`include_states`, `author_did`) |
+| `/api/v1/memory/by-hash/{hash}` | GET | Content-addressed record retrieval |
+| `/api/v1/memory/facts/resolve` | POST | Three-mode fact resolution: planning (pick winner) / audit (show all) / sensitive (HITL on conflict) |
+| `/api/v1/memory/sync/summary` | GET | Merkle fingerprint of this node's signed records (peer-authenticated) |
+| `/api/v1/memory/sync/buckets/{i}` | GET | Sorted hashes in one Merkle bucket (peer-authenticated) |
+| `/api/v1/memory/sync/fetch` | POST | Fetch signed records by content hash (peer-authenticated) |
+
+**Core platform** *(v1.0.0 baseline)*
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/workflows/submit` | POST | Submit a plain-English task for orchestration |
@@ -156,8 +191,6 @@ Full interactive docs at `http://localhost:8000/docs` (Swagger) or `/redoc` (ReD
 | `/api/v1/agents/search` | GET | Discovery with trust/cost/capability filtering |
 | `/api/v1/workflows` | GET/POST | Workflow management |
 | `/api/v1/workflows/{id}/status` | GET | Real-time workflow progress |
-| `/api/v1/memory/write` | POST | Write to shared agent memory |
-| `/api/v1/memory/query` | POST | Semantic search across agent memory |
 | `/api/v1/trust/{agent_id}` | GET | Agent trust breakdown |
 | `/api/v1/policy/evaluate` | POST | Policy rule evaluation |
 | `/api/v1/audit/search` | GET | Query audit trail |
@@ -198,12 +231,14 @@ See [docs/deployment.md](docs/deployment.md) for Docker, environment configurati
 ## Tech Stack
 
 - **Backend**: FastAPI, SQLAlchemy 2.0 (async), Pydantic v2
-- **Database**: PostgreSQL 16 + pgvector (384-dim embeddings)
-- **Cache/Queue**: Redis 7 (cache, pub/sub, rate limiting)
+- **Identity**: `cryptography` (Ed25519), multibase base58btc encoding, RFC 8785-style JSON canonicalisation
+- **Database**: PostgreSQL 16 + pgvector (384-dim embeddings), GIN index on parent-hash chains
+- **Cache/Queue**: Redis 7 (cache, pub/sub, rate limiting, Merkle summary cache)
 - **LLM**: Anthropic Claude (primary), OpenAI (fallback), Mock (testing)
 - **Embeddings**: sentence-transformers (all-MiniLM-L6-v2)
 - **Frontend**: Next.js 14, React 18, Tailwind CSS, Framer Motion
 - **Background**: Celery 5 (health monitoring, trust decay, memory GC)
+- **Deployment**: Fly.io × 3 regions with GitHub Actions CI + auto-deploy, Cloudflare Tunnel fallback
 
 ## License
 
