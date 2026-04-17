@@ -160,6 +160,10 @@ class Settings(BaseSettings):
     # strings. Empty → accept any valid signature (local-dev). Populate for
     # production to refuse signatures from unknown peers.
     massclaw_peer_allowlist: str = ""
+    # Background gossip cadence. 30s keeps the load on free-tier Fly Redis
+    # manageable while still reconciling quickly enough for demos.
+    gossip_interval_seconds: float = 30.0
+    gossip_fanout: int = 2
 
     @field_validator("massclaw_federation_peers", mode="before")
     @classmethod

@@ -22,6 +22,7 @@ the record is federation-ready.
 
 from __future__ import annotations
 
+from app.crdt.gossip import GossipRoundReport, GossipService
 from app.crdt.hashing import (
     HASH_MULTIBASE_PREFIX,
     CanonicalBody,
@@ -43,6 +44,14 @@ from app.crdt.peer_auth import (
     require_verified_peer,
     verify_peer_request,
 )
+from app.crdt.peer_client import (
+    PeerClient,
+    PeerClientError,
+    PeerInvalidResponseError,
+    PeerRecord,
+    PeerUnauthorizedError,
+    PeerUnavailableError,
+)
 from app.crdt.store import (
     CRDTStore,
     CRDTStoreError,
@@ -55,6 +64,14 @@ __all__ = [
     "BUCKET_COUNT",
     "CRDTStore",
     "CRDTStoreError",
+    "GossipRoundReport",
+    "GossipService",
+    "PeerClient",
+    "PeerClientError",
+    "PeerInvalidResponseError",
+    "PeerRecord",
+    "PeerUnauthorizedError",
+    "PeerUnavailableError",
     "CanonicalBody",
     "HASH_MULTIBASE_PREFIX",
     "MerkleSummary",

@@ -26,6 +26,7 @@ celery_app.conf.update(
         "app.workers.celery_app.decay_trust_scores": {"queue": "trust"},
         "app.workers.celery_app.garbage_collect_memory": {"queue": "memory"},
         "app.workers.celery_app.recalculate_scores": {"queue": "workflow"},
+        "app.workers.celery_app.crdt_gossip_tick": {"queue": "crdt_sync"},
     },
     beat_schedule={
         "health-check-every-60s": {
@@ -43,6 +44,10 @@ celery_app.conf.update(
         "score-recalc-every-12h": {
             "task": "app.workers.celery_app.recalculate_scores",
             "schedule": 43200.0,
+        },
+        "crdt-gossip-tick": {
+            "task": "app.workers.celery_app.crdt_gossip_tick",
+            "schedule": settings.gossip_interval_seconds,
         },
     },
 )
@@ -113,3 +118,19 @@ def recalculate_scores():
     from app.workers.score_update import run_score_recalculation
 
     return asyncio.run(run_score_recalculation())
+
+
+@celery_app.task(
+    name="app.workers.celery_app.crdt_gossip_tick",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=60,
+    max_retries=2,
+    retry_jitter=True,
+    acks_late=True,
+)
+def crdt_gossip_tick():
+    """Run one CRDT gossip round — reconciles with 2 random peers."""
+    from app.workers.crdt_gossip import run_crdt_gossip_sync
+
+    return run_crdt_gossip_sync()
