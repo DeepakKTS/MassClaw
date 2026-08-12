@@ -311,27 +311,40 @@ class TrustService:
 
         result = await self.session.execute(query)
         rows = result.all()
+        if not rows:
+            return []
+
+        # One aggregate for the whole page. This used to be a per-agent
+        # COUNT/AVG inside the loop below, so a default page cost 21 round
+        # trips instead of 2 — and the count grew with the page size.
+        stats_result = await self.session.execute(
+            select(
+                TrustEvent.agent_id,
+                func.count().label("total"),
+                func.avg(TrustEvent.composite_score).label("recent_avg"),
+            )
+            .where(TrustEvent.agent_id.in_([row.agent_id for row in rows]))
+            .group_by(TrustEvent.agent_id)
+        )
+        # An agent with no events is simply absent from a GROUP BY, where the
+        # old per-agent query returned (0, NULL). Both collapse to "no
+        # interactions, no trend" below, so the answers are unchanged.
+        stats_by_agent = {r.agent_id: r for r in stats_result}
 
         leaderboard = []
         for rank, row in enumerate(rows, start=1):
-            # Compute interaction count and trend per agent
-            event_stats = await self.session.execute(
-                select(
-                    func.count().label("total"),
-                    func.avg(TrustEvent.composite_score).label("recent_avg"),
-                ).where(TrustEvent.agent_id == row.agent_id)
-            )
-            stats = event_stats.one()
+            stats = stats_by_agent.get(row.agent_id)
+            recent_avg = stats.recent_avg if stats is not None else None
 
             # Trend: difference between current trust and average composite
-            trend = row.trust_score - float(stats.recent_avg or row.trust_score)
+            trend = row.trust_score - float(recent_avg or row.trust_score)
 
             leaderboard.append(
                 TrustSummary(
                     agent_id=row.agent_id,
                     agent_name=row.agent_name,
                     trust_score=row.trust_score,
-                    total_interactions=stats.total,
+                    total_interactions=stats.total if stats is not None else 0,
                     trend=round(trend, 4),
                     rank=rank,
                 )

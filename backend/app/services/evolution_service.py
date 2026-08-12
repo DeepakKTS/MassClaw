@@ -245,20 +245,38 @@ class EvolutionService:
 
         result = await self.session.execute(query)
         rows = result.all()
+        if not rows:
+            return []
 
-        # Compute delta from previous period (7 days ago)
-        rankings: list[AgentRanking] = []
-        for rank, row in enumerate(rows, start=1):
-            seven_days_ago = datetime.now(UTC) - timedelta(days=7)
-            prev_result = await self.session.execute(
-                select(func.avg(AgentScore.composite)).where(
-                    and_(
-                        AgentScore.agent_id == row.agent_id,
-                        AgentScore.created_at < seven_days_ago,
-                    )
+        # Compute delta from previous period (7 days ago).
+        #
+        # The cutoff is computed once, outside the loop. It used to be
+        # recomputed per row, so every agent was compared against a slightly
+        # different seven-day boundary — a correctness smell rather than just
+        # a cost. The averages are one GROUP BY rather than one query per
+        # agent, which was 21 round trips on a default page.
+        seven_days_ago = datetime.now(UTC) - timedelta(days=7)
+        prev_result = await self.session.execute(
+            select(
+                AgentScore.agent_id,
+                func.avg(AgentScore.composite).label("prev_avg"),
+            )
+            .where(
+                and_(
+                    AgentScore.agent_id.in_([row.agent_id for row in rows]),
+                    AgentScore.created_at < seven_days_ago,
                 )
             )
-            prev_avg = prev_result.scalar_one()
+            .group_by(AgentScore.agent_id)
+        )
+        prev_by_agent = {r.agent_id: r.prev_avg for r in prev_result}
+
+        rankings: list[AgentRanking] = []
+        for rank, row in enumerate(rows, start=1):
+            # Absent from the GROUP BY means no scores older than the cutoff,
+            # which the old per-agent AVG reported as NULL. Both fall back to
+            # the current average, giving a zero delta.
+            prev_avg = prev_by_agent.get(row.agent_id)
             current_avg = float(row.avg_composite or 0)
             delta = current_avg - float(prev_avg or current_avg)
 
@@ -313,16 +331,14 @@ class EvolutionService:
 
         promoted: list[str] = []
         demoted: list[str] = []
+        promote_ids: list[uuid.UUID] = []
+        demote_ids: list[uuid.UUID] = []
 
         for row in rows:
             avg = float(row.avg_composite)
 
             if avg >= promote_threshold and row.safety_level < 10:
-                await self.session.execute(
-                    update(Agent)
-                    .where(Agent.agent_id == row.agent_id)
-                    .values(safety_level=min(10, row.safety_level + 1))
-                )
+                promote_ids.append(row.agent_id)
                 promoted.append(row.name)
                 logger.info("agent_promoted", agent=row.name, new_level=row.safety_level + 1)
                 await EventBus.publish_dict(
@@ -332,11 +348,7 @@ class EvolutionService:
                 )
 
             elif avg <= demote_threshold and row.safety_level > 1:
-                await self.session.execute(
-                    update(Agent)
-                    .where(Agent.agent_id == row.agent_id)
-                    .values(safety_level=max(1, row.safety_level - 1))
-                )
+                demote_ids.append(row.agent_id)
                 demoted.append(row.name)
                 logger.info("agent_demoted", agent=row.name, new_level=row.safety_level - 1)
                 await EventBus.publish_dict(
@@ -344,6 +356,21 @@ class EvolutionService:
                     "agent.demoted",
                     {"agent_id": str(row.agent_id), "name": row.name, "new_level": row.safety_level - 1},
                 )
+
+        # One UPDATE per direction rather than one per agent. The branch guards
+        # above already exclude anyone at a bound (``safety_level < 10`` for
+        # promotion, ``> 1`` for demotion), so the previous per-row
+        # ``min(10, ...)`` / ``max(1, ...)`` clamps could never bind and a plain
+        # increment is equivalent. The events stay per-agent: one event per
+        # agent moved is the contract, not an N+1.
+        if promote_ids:
+            await self.session.execute(
+                update(Agent).where(Agent.agent_id.in_(promote_ids)).values(safety_level=Agent.safety_level + 1)
+            )
+        if demote_ids:
+            await self.session.execute(
+                update(Agent).where(Agent.agent_id.in_(demote_ids)).values(safety_level=Agent.safety_level - 1)
+            )
 
         if promoted or demoted:
             await self.session.flush()
