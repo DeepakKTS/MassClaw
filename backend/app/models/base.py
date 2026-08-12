@@ -95,6 +95,14 @@ class MemoryType(str, enum.Enum):
     RESULT = "result"
     REASONING = "reasoning"
     META = "meta"
+    # Semantic result cache. A distinct class on purpose: cache entries are
+    # cross-workflow (``workflow_id`` is NULL) and re-servable to any caller,
+    # so they must never be confused with ``RESULT`` — a real task output that
+    # belongs to exactly one workflow. Filtering the cache read on
+    # ``memory_type='result' AND confidence >= 0.8`` used to match genuine
+    # outputs, which are written at confidence 0.85, and hand one workflow's
+    # private result to an unrelated one.
+    CACHE = "cache"
 
 
 class WalletActionType(str, enum.Enum):

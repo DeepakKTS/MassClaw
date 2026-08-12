@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -1749,10 +1749,27 @@ class WorkflowScheduler:
     # ── Strategy 3: Semantic Result Cache ──
 
     async def _check_semantic_cache(self, node: DAGNode, prompt: str) -> LLMResponse | None:
-        """Check if a semantically similar task has been completed recently.
+        """Check whether a semantically similar prompt was already answered.
 
-        Uses pgvector to find completed task outputs with similar input prompts.
-        Returns a synthetic LLMResponse if a high-similarity match is found.
+        Uses pgvector to find a live cache entry for *this capability* whose
+        stored prompt is close to ``prompt``. Returns a synthetic LLMResponse
+        on a hit, ``None`` on a miss.
+
+        Every clause of the read filter exists to stop a specific wrong hit:
+
+        - ``memory_type='cache'`` — only rows this method wrote. Genuine task
+          results are ``memory_type='result'`` and belong to one workflow.
+        - ``record_state='active'`` and ``expires_at > now()`` — an entry stops
+          serving the moment it expires or GC tombstones it, not whenever the
+          row is finally deleted.
+        - matching ``capability`` — a research answer must not satisfy a code
+          node just because the two prompts read alike.
+        - matching ``cache_version`` — widening the poison markers below
+          retires every entry written under the old rules.
+
+        And the content is re-checked against the poison markers on the way
+        out, so a row that predates the write-side guard cannot keep
+        masquerading as a 0.5ms success.
         """
         try:
             from sqlalchemy import text
@@ -1774,53 +1791,88 @@ class WorkflowScheduler:
             # small table misses matches outright. Here that only costs a
             # needless LLM call rather than correctness, but a cache that
             # silently never hits is not much of a cache.
-            probes = max(1, int(get_settings().memory_ivfflat_probes))
+            settings = get_settings()
+            probes = max(1, int(settings.memory_ivfflat_probes))
             await self.session.execute(text(f"SET LOCAL ivfflat.probes = {probes}"))
 
-            # Query memory records for similar completed task outputs
-            # Use CAST() instead of :: to avoid SQLAlchemy bind-param collision
+            # Use CAST() instead of :: to avoid SQLAlchemy bind-param collision.
+            # The ivfflat index only covers `embedding`, so the predicates here
+            # are applied by Postgres after the ANN scan — safe at probes=100
+            # (every list scanned), which is the default for exactly that reason.
             result = await self.session.execute(
                 text("""
                     SELECT content,
                            1 - (embedding <=> CAST(:embedding AS vector)) as similarity
                     FROM memory_records
-                    WHERE memory_type = 'result'
-                      AND confidence >= 0.8
-                      AND created_at > NOW() - INTERVAL '24 hours'
+                    WHERE memory_type = 'cache'
+                      AND record_state = 'active'
+                      AND expires_at IS NOT NULL
+                      AND expires_at > NOW()
+                      AND metadata->>'capability' = :capability
+                      AND metadata->>'cache_version' = :cache_version
                     ORDER BY embedding <=> CAST(:embedding AS vector)
                     LIMIT 1
                 """),
-                {"embedding": embedding_str},
+                {
+                    "embedding": embedding_str,
+                    "capability": node.capability,
+                    "cache_version": str(self._CACHE_GUARD_VERSION),
+                },
             )
             row = result.fetchone()
 
-            if row and row.similarity >= 0.88:
-                logger.info(
-                    "semantic_cache_hit",
+            if not row or row.similarity < settings.semantic_cache_similarity_threshold:
+                return None
+
+            if not self._is_cacheable(row.content):
+                # Written before the guard existed, or by an older marker list.
+                logger.warning(
+                    "semantic_cache_poisoned_entry_rejected",
                     capability=node.capability,
                     similarity=round(row.similarity, 3),
+                    preview=row.content[:100],
                 )
-                return LLMResponse(
-                    content=row.content,
-                    model="cache",
-                    input_tokens=0,
-                    output_tokens=0,
-                    cost=Decimal("0"),
-                    latency_ms=0.5,
-                    metadata={"stop_reason": "cache_hit", "provider": "cache"},
-                )
-            return None
+                return None
+
+            logger.info(
+                "semantic_cache_hit",
+                capability=node.capability,
+                similarity=round(row.similarity, 3),
+            )
+            return LLMResponse(
+                content=row.content,
+                model="cache",
+                input_tokens=0,
+                output_tokens=0,
+                cost=Decimal("0"),
+                latency_ms=0.5,
+                metadata={"stop_reason": "cache_hit", "provider": "cache"},
+            )
         except Exception as e:
-            # Cache miss on error — fall through to LLM call
-            logger.debug("semantic_cache_error", error=str(e))
+            # Fail open: a broken cache costs an LLM call, not the workflow.
+            # Logged at warning because the only other symptom is latency —
+            # at debug this failed silently for the life of the process.
+            logger.warning(
+                "semantic_cache_error",
+                capability=node.capability,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
             return None
+
+    # Version of the cache contract below — the marker list plus the shape of
+    # the metadata the read filter expects. Stamped into every entry and
+    # matched on read, so bumping it retires every entry written under the old
+    # rules instead of leaving them to serve until their TTL runs out.
+    # Bump this whenever _CACHE_POISON_MARKERS changes.
+    _CACHE_GUARD_VERSION = 1
 
     # Content markers that indicate a failed / degraded task output.
     # Responses matching these must NEVER land in the semantic cache —
     # otherwise future runs hit a stale failure via cosine similarity and
     # appear to succeed in 0.5ms with "tool unavailable" text. Surfaced
     # by OpenClaw harness s5 where poisoned cache masked the real tool
-    # dispatch fix.
+    # dispatch fix. Checked on read as well as write.
     _CACHE_POISON_MARKERS = (
         "not available",
         "unavailable",
@@ -1846,8 +1898,9 @@ class WorkflowScheduler:
     async def _store_in_cache(self, node: DAGNode, prompt: str, response: LLMResponse) -> None:
         """Store a task result in the semantic cache for future reuse.
 
-        Writes to memory_records with the prompt embedding so future similar
-        queries can hit the cache via _check_semantic_cache().
+        Writes a ``memory_type='cache'`` record keyed on the *prompt* embedding
+        (that is what a later lookup compares against) with a real
+        ``expires_at``, so the memory GC pipeline evicts it on schedule.
         """
         try:
             if not response.content or len(response.content) < 50:
@@ -1873,17 +1926,19 @@ class WorkflowScheduler:
             from app.models.memory import MemoryRecord
             from app.models.memory import MemoryType as MemType
 
+            ttl_hours = max(1, int(get_settings().semantic_cache_ttl_hours))
             cache_record = MemoryRecord(
                 workflow_id=None,  # Cache entries are cross-workflow
                 source_agent_id=None,
-                memory_type=MemType.RESULT,
+                memory_type=MemType.CACHE,
                 content=response.content[:5000],  # Cap stored content
                 embedding=prompt_embedding,
                 confidence=0.85,
+                expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours),
                 metadata_={
                     "capability": node.capability,
                     "model": response.model,
-                    "cached": True,
+                    "cache_version": self._CACHE_GUARD_VERSION,
                 },
             )
             self.session.add(cache_record)
@@ -1894,4 +1949,12 @@ class WorkflowScheduler:
                 content_length=len(response.content),
             )
         except Exception as e:
-            logger.debug("semantic_cache_store_error", error=str(e))
+            # Non-fatal — the task already succeeded, we just failed to cache
+            # it. Still a warning: silently never caching is indistinguishable
+            # from a cache that simply never hits.
+            logger.warning(
+                "semantic_cache_store_error",
+                capability=node.capability,
+                error=str(e),
+                error_type=type(e).__name__,
+            )

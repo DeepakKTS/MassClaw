@@ -144,6 +144,48 @@ def _guard_test_targets() -> None:
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
+async def _sync_pg_enum_values() -> AsyncGenerator[None, None]:
+    """Add enum values the models declare but an older test database lacks.
+
+    ``create_all`` creates a Postgres enum type with every value it knows, but
+    it will not *alter* one that already exists — and the test database is
+    persistent on a dev machine. So adding a member to a Python enum passes on
+    a fresh CI database (built from scratch each run) and fails locally with
+    ``invalid input value for enum ...``, or the reverse once a migration
+    lands. Reconciling here keeps the two honest, and mirrors what the alembic
+    ``ALTER TYPE ... ADD VALUE`` migrations do to real databases.
+
+    Discovered from the metadata rather than a hand-maintained list, so a new
+    enum member needs no change to this fixture.
+    """
+    from sqlalchemy import Enum as SAEnum
+    from sqlalchemy import text
+
+    await dispose_db()
+    init_db()
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    declared: dict[str, list[str]] = {}
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, SAEnum) and column.type.name:
+                declared.setdefault(column.type.name, []).extend(column.type.enums)
+
+    # AUTOCOMMIT because ALTER TYPE ... ADD VALUE cannot run in a transaction
+    # block on Postgres before 12, and the value is unusable until commit even
+    # after that.
+    async with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
+        for type_name, values in declared.items():
+            for value in dict.fromkeys(values):
+                await conn.execute(text(f"ALTER TYPE {type_name} ADD VALUE IF NOT EXISTS '{value}'"))
+
+    await dispose_db()
+    yield
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
 async def _flush_test_redis() -> AsyncGenerator[None, None]:
     """Start and finish with an empty test Redis database.
 

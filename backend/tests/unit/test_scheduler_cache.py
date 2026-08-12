@@ -3,18 +3,28 @@
 Tests _check_semantic_cache and _store_in_cache with mocked
 embedding service, since sentence-transformers may not be
 available in CI/test environments.
+
+The cache is a *distinct class* of memory record, not a high-confidence
+``result`` row: it is keyed by capability, expires, and is re-checked
+against the poison markers on the way out. Every test below pins one
+edge of that contract — the read path must refuse anything it cannot
+positively identify as a live cache entry for this capability.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 
+from app.config import get_settings
 from app.llm.base import LLMResponse
-from app.models.memory import MemoryRecord, MemoryType
+from app.models.base import MemoryType
+from app.models.memory import MemoryRecord
 from app.orchestration.dag import DAGNode
 from app.orchestration.scheduler import WorkflowScheduler
 
@@ -58,42 +68,34 @@ class TestSchedulerSemanticCache:
         """Return a deterministic 384-dim embedding for testing."""
         return [seed] * 384
 
+    @staticmethod
+    def _mock_embedder(embedding: list[float]) -> MagicMock:
+        svc = MagicMock()
+        svc.is_loaded = True
+        svc.embed = AsyncMock(return_value=embedding)
+        return svc
+
+    async def _stored_cache_row(self, scheduler) -> MemoryRecord:
+        """Return the single cache row written by _store_in_cache."""
+        rows = (
+            (await scheduler.session.execute(select(MemoryRecord).order_by(MemoryRecord.created_at.desc()).limit(1)))
+            .scalars()
+            .all()
+        )
+        assert rows, "expected _store_in_cache to have written a row"
+        return rows[0]
+
     # ── Test 1: store and retrieve cache ──
 
     @pytest.mark.asyncio
-    async def test_store_and_retrieve_cache(self, scheduler, sample_workflow):
-        """Store a result in the semantic cache, then verify _check_semantic_cache
-        returns the cached content for a prompt with an identical embedding."""
+    async def test_store_and_retrieve_cache(self, scheduler):
+        """A stored entry is served back for a prompt with the same embedding."""
         node = self._make_node()
         prompt = "Analyze the operational efficiency of warehouse logistics"
         response = self._make_response()
-        embedding = self._fake_embedding(0.5)
 
-        mock_svc = MagicMock()
-        mock_svc.is_loaded = True
-        mock_svc.embed = AsyncMock(return_value=embedding)
-
-        with patch(EMBED_SVC_PATCH, return_value=mock_svc):
-            # Store — the real _store_in_cache sets workflow_id=None which
-            # violates the FK constraint, so we insert the record manually
-            # with a valid workflow_id.
-            record = MemoryRecord(
-                workflow_id=sample_workflow.workflow_id,
-                source_agent_id=None,
-                memory_type=MemoryType.RESULT,
-                content=response.content[:5000],
-                embedding=embedding,
-                confidence=0.85,
-                metadata_={
-                    "capability": node.capability,
-                    "model": response.model,
-                    "cached": True,
-                },
-            )
-            scheduler.session.add(record)
-            await scheduler.session.flush()
-
-            # Retrieve — the SQL query should find the stored record
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.5))):
+            await scheduler._store_in_cache(node, prompt, response)
             cached = await scheduler._check_semantic_cache(node, prompt)
 
         # With identical embeddings the cosine similarity is 1.0, above the 0.88 threshold
@@ -106,42 +108,166 @@ class TestSchedulerSemanticCache:
     # ── Test 2: cache miss on dissimilar prompt ──
 
     @pytest.mark.asyncio
-    async def test_cache_miss_on_dissimilar_prompt(self, scheduler, sample_workflow):
-        """Store a result, then query with a very different embedding.
-        The cosine similarity should fall below the 0.88 threshold."""
+    async def test_cache_miss_on_dissimilar_prompt(self, scheduler):
+        """A very different embedding falls below the 0.88 similarity threshold."""
         node = self._make_node()
         response = self._make_response()
 
-        store_embedding = self._fake_embedding(0.9)
         # Orthogonal embedding — alternating positive/negative values
         query_embedding = [0.9 if i % 2 == 0 else -0.9 for i in range(384)]
 
-        mock_svc = MagicMock()
-        mock_svc.is_loaded = True
-        # First call is for check_semantic_cache
-        mock_svc.embed = AsyncMock(return_value=query_embedding)
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.9))):
+            await scheduler._store_in_cache(node, "Warehouse logistics efficiency", response)
 
-        with patch(EMBED_SVC_PATCH, return_value=mock_svc):
-            # Store with the uniform embedding
-            record = MemoryRecord(
-                workflow_id=sample_workflow.workflow_id,
-                source_agent_id=None,
-                memory_type=MemoryType.RESULT,
-                content=response.content[:5000],
-                embedding=store_embedding,
-                confidence=0.85,
-                metadata_={"capability": node.capability, "cached": True},
-            )
-            scheduler.session.add(record)
-            await scheduler.session.flush()
-
-            # Query with a very different embedding
-            prompt_query = "What is the history of Renaissance art painting"
-            cached = await scheduler._check_semantic_cache(node, prompt_query)
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(query_embedding)):
+            cached = await scheduler._check_semantic_cache(node, "What is the history of Renaissance art painting")
 
         assert cached is None
 
-    # ── Test 3: graceful degradation when embedding unavailable ──
+    # ── Test 3: a genuine task result must never be served as a cache hit ──
+
+    @pytest.mark.asyncio
+    async def test_real_task_result_is_not_served_as_cache_hit(self, scheduler, sample_workflow):
+        """Task outputs are written at confidence 0.85 with memory_type=result —
+        exactly what the cache read used to filter on. Serving one would hand
+        another workflow's private output to an unrelated caller."""
+        node = self._make_node()
+        embedding = self._fake_embedding(0.4)
+
+        scheduler.session.add(
+            MemoryRecord(
+                workflow_id=sample_workflow.workflow_id,
+                source_agent_id=None,
+                memory_type=MemoryType.RESULT,
+                content="Confidential Q3 revenue figures for the acquisition target, at length.",
+                embedding=embedding,
+                confidence=0.85,
+                metadata_={"capability": node.capability, "task_id": "abc"},
+            )
+        )
+        await scheduler.session.flush()
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(embedding)):
+            cached = await scheduler._check_semantic_cache(node, "Any prompt at all")
+
+        assert cached is None
+
+    # ── Test 4: entries are scoped to the capability that produced them ──
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_requires_matching_capability(self, scheduler):
+        """An entry produced by a research node must not answer a code node."""
+        producer = self._make_node(capability="research")
+        consumer = self._make_node(capability="code_generation")
+        prompt = "Summarise the deployment topology"
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.3))):
+            await scheduler._store_in_cache(producer, prompt, self._make_response())
+            cached = await scheduler._check_semantic_cache(consumer, prompt)
+
+        assert cached is None
+
+    # ── Test 5: expiry is enforced on read ──
+
+    @pytest.mark.asyncio
+    async def test_expired_entry_is_not_served(self, scheduler):
+        """Past expires_at means the row is dead even before GC collects it."""
+        node = self._make_node()
+        prompt = "Analyze warehouse throughput"
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.6))):
+            await scheduler._store_in_cache(node, prompt, self._make_response())
+            row = await self._stored_cache_row(scheduler)
+            row.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            await scheduler.session.flush()
+
+            cached = await scheduler._check_semantic_cache(node, prompt)
+
+        assert cached is None
+
+    # ── Test 6: lifecycle state is enforced on read ──
+
+    @pytest.mark.asyncio
+    async def test_tombstoned_entry_is_not_served(self, scheduler):
+        """GC tombstones an entry before hard-deleting it; it must stop serving
+        the moment it is tombstoned, not when the row finally disappears."""
+        from app.models.base import RecordState
+
+        node = self._make_node()
+        prompt = "Analyze warehouse throughput"
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.7))):
+            await scheduler._store_in_cache(node, prompt, self._make_response())
+            row = await self._stored_cache_row(scheduler)
+            row.record_state = RecordState.TOMBSTONED
+            await scheduler.session.flush()
+
+            cached = await scheduler._check_semantic_cache(node, prompt)
+
+        assert cached is None
+
+    # ── Test 7: the guard version invalidates entries wholesale ──
+
+    @pytest.mark.asyncio
+    async def test_entry_from_an_older_guard_version_is_not_served(self, scheduler):
+        """Bumping the guard version must retire every entry written under the
+        old one — otherwise a widened poison-marker list can never take effect
+        on rows already in the table."""
+        node = self._make_node()
+        prompt = "Analyze warehouse throughput"
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.8))):
+            await scheduler._store_in_cache(node, prompt, self._make_response())
+            row = await self._stored_cache_row(scheduler)
+            row.metadata_ = {**row.metadata_, "cache_version": 0}
+            await scheduler.session.flush()
+
+            cached = await scheduler._check_semantic_cache(node, prompt)
+
+        assert cached is None
+
+    # ── Test 8: the poison guard also runs on the way out ──
+
+    @pytest.mark.asyncio
+    async def test_poisoned_content_is_not_served(self, scheduler):
+        """Rows that predate the write-side guard (or slipped past it) must be
+        rejected on read, so a stale failure cannot masquerade as a 0.5ms
+        success forever."""
+        node = self._make_node()
+        prompt = "Analyze warehouse throughput"
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.55))):
+            await scheduler._store_in_cache(node, prompt, self._make_response())
+            row = await self._stored_cache_row(scheduler)
+            row.content = "The requested tool not found in this environment, so the task could not run."
+            await scheduler.session.flush()
+
+            cached = await scheduler._check_semantic_cache(node, prompt)
+
+        assert cached is None
+
+    # ── Test 9: the write contract ──
+
+    @pytest.mark.asyncio
+    async def test_store_writes_a_distinguishable_expiring_row(self, scheduler):
+        """Cache writes must be their own memory class, cross-workflow, with an
+        expiry GC can act on and the metadata the read path filters by."""
+        node = self._make_node()
+        response = self._make_response()
+
+        with patch(EMBED_SVC_PATCH, return_value=self._mock_embedder(self._fake_embedding(0.2))):
+            await scheduler._store_in_cache(node, "Analyze warehouse throughput", response)
+
+        row = await self._stored_cache_row(scheduler)
+        assert row.memory_type.value == "cache"
+        assert row.workflow_id is None
+        assert row.metadata_["capability"] == node.capability
+        assert row.metadata_["cache_version"] == WorkflowScheduler._CACHE_GUARD_VERSION
+        assert row.expires_at is not None
+        expected = datetime.now(UTC) + timedelta(hours=get_settings().semantic_cache_ttl_hours)
+        assert abs((row.expires_at - expected).total_seconds()) < 300
+
+    # ── Test 10: graceful degradation when embedding unavailable ──
 
     @pytest.mark.asyncio
     async def test_cache_skip_when_embedding_unavailable(self, scheduler):
@@ -169,9 +295,7 @@ class TestSchedulerSemanticCache:
         prompt = "Some prompt"
         short_response = self._make_response(content="Short")
 
-        mock_svc = MagicMock()
-        mock_svc.is_loaded = True
-        mock_svc.embed = AsyncMock(return_value=self._fake_embedding())
+        mock_svc = self._mock_embedder(self._fake_embedding())
 
         with patch(EMBED_SVC_PATCH, return_value=mock_svc):
             await scheduler._store_in_cache(node, prompt, short_response)

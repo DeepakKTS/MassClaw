@@ -136,6 +136,21 @@ class Settings(BaseSettings):
     # which holds recall far better at scale.
     memory_ivfflat_probes: int = 100
 
+    # Semantic result cache (WorkflowScheduler strategy 3)
+    #
+    # Entries live in memory_records as memory_type='cache' and are keyed by
+    # capability. TTL is a real expiry written to expires_at, so the normal
+    # memory GC pipeline tombstones and then hard-deletes them; it is not just
+    # a read filter, which is what let the table grow without bound before.
+    semantic_cache_ttl_hours: int = 24
+    # Cosine similarity a stored prompt must reach to be reused. High on
+    # purpose: a wrong hit returns a confidently worded answer to a question
+    # nobody asked, which is worse than paying for the LLM call.
+    semantic_cache_similarity_threshold: float = 0.88
+    # Hard ceiling on live entries. GC trims the oldest beyond this so a busy
+    # instance cannot fill the table between TTL sweeps.
+    semantic_cache_max_entries: int = 5000
+
     # Rate Limit Behavior
     rate_limit_fail_open: bool = False  # When True, allow requests if Redis is down
 
