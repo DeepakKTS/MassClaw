@@ -198,12 +198,32 @@ class FederatedApprovalStore:
         )
         return [r for r in result.scalars().all() if is_approval_record(r)]
 
-    async def get_pending(self, workflow_id: str | None = None) -> list[ApprovalRequest]:
+    async def get_pending(
+        self,
+        workflow_id: str | None = None,
+        *,
+        include_expired: bool = False,
+    ) -> list[ApprovalRequest]:
         """Return all pending approvals, de-duped by ``request_id``.
 
         An approval is considered decided if any record with the same
         ``request_id`` has a non-``pending`` status. The latest record
         (most recent ``created_at``) wins for the returned representation.
+
+        Requests past ``expires_at`` are excluded by default. This view used to
+        ignore expiry entirely, so a request whose deadline had long passed was
+        still reported as actionable — indefinitely, since nothing else was
+        looking at CRDT-sourced approvals either. ``ApprovalManager.get_pending``
+        has always wall-clock filtered; this keeps the two consistent.
+
+        Reaping is still the janitor's job (it writes the ``expired`` decision
+        twin that peers reconcile against). This only stops an expired request
+        being *displayed* as live in the window before a tick lands.
+
+        Parameters
+        ----------
+        include_expired:
+            Set by the janitor, which specifically needs the expired ones.
         """
         by_request: dict[str, tuple[ApprovalRequest, bool]] = {}
         for record in await self._scan():
@@ -223,7 +243,9 @@ class FederatedApprovalStore:
             elif not already_decided:
                 # Keep the freshest pending representation.
                 by_request[req.request_id] = (req, False)
-        return [req for req, decided in by_request.values() if not decided]
+        return [
+            req for req, decided in by_request.values() if not decided and (include_expired or not req.is_expired())
+        ]
 
     async def find_by_request_id(self, request_id: str) -> ApprovalRequest | None:
         """Return the latest state (pending/decided) for a request, or None."""

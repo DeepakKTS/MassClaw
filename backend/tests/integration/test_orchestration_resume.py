@@ -130,6 +130,46 @@ class TestResumeOnLocalNode:
         assert seeded_workflow.metadata_["resumed_from_checkpoint"] == saved.content_hash
 
 
+class TestResumeClearsPreviousOutcome:
+    """A resumed workflow must not keep the end timestamp of its last attempt.
+
+    The realistic path into resume is: request parks in AWAITING_APPROVAL, the
+    approval janitor times it out and sets ``status=FAILED, completed_at=T1``,
+    then a human approves after the fact and resumes. Leaving ``completed_at``
+    at T1 makes the row claim to be RUNNING and finished at the same time, and
+    since the scheduler re-stamps ``started_at`` on the new attempt, T1 ends up
+    *before* the start — which is what made /status report a frozen, negative
+    ``elapsed_seconds``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_completed_at_is_cleared_on_resume(self, db_session, redis_client, keypair, seeded_workflow):
+        from datetime import UTC, datetime, timedelta
+
+        # Simulate the janitor having already failed this workflow.
+        seeded_workflow.status = WorkflowStatus.FAILED
+        seeded_workflow.completed_at = datetime.now(UTC) - timedelta(minutes=5)
+        seeded_workflow.result = {"error": "approval timeout"}
+        await db_session.flush()
+
+        store = CheckpointStore(session=db_session, keypair=keypair)
+        saved = await store.save(
+            WorkflowCheckpoint.from_dag(
+                workflow_id=seeded_workflow.workflow_id,
+                dag=_dag(),
+                reason="awaiting_approval: review",
+                current_task_id="task-2",
+            )
+        )
+
+        resumer = WorkflowResumer(session=db_session, keypair=keypair)
+        await resumer.restore(await resumer.load(saved.content_hash))
+
+        await db_session.refresh(seeded_workflow)
+        assert seeded_workflow.status == WorkflowStatus.RUNNING
+        assert seeded_workflow.completed_at is None, "a running workflow cannot have an end timestamp"
+
+
 class TestResumeOnFreshNode:
     """Simulates node-B: workflow row exists (pre-seeded via the federation
     demo script or an earlier gossip tick) but no task rows yet — that's

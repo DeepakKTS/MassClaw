@@ -62,6 +62,20 @@ class WorkflowStatus(str, enum.Enum):
     AWAITING_APPROVAL = "awaiting_approval"
 
 
+#: Statuses from which a workflow does not resume.
+#:
+#: Note ``AWAITING_APPROVAL`` and ``PAUSED`` are deliberately absent: both can
+#: go back to RUNNING, which is why ``completed_at`` cannot be trusted as an
+#: end timestamp unless the status is in this set.
+TERMINAL_WORKFLOW_STATES: frozenset[WorkflowStatus] = frozenset(
+    {
+        WorkflowStatus.COMPLETED,
+        WorkflowStatus.FAILED,
+        WorkflowStatus.CANCELLED,
+    }
+)
+
+
 class TaskStatus(str, enum.Enum):
     TODO = "todo"
     PENDING = "pending"

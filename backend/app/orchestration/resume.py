@@ -144,6 +144,13 @@ class WorkflowResumer:
         else:
             workflow.dag_snapshot = checkpoint.dag_snapshot
             workflow.status = WorkflowStatus.RUNNING
+            # Clear any end timestamp from a previous attempt. A workflow being
+            # resumed has very often been failed first — the approval janitor
+            # times out a parked request and stamps completed_at — and leaving
+            # that behind makes the row self-contradictory: RUNNING, yet
+            # finished at a time that now predates its own started_at. That is
+            # what made /status report a frozen, negative elapsed_seconds.
+            workflow.completed_at = None
             meta = dict(workflow.metadata_ or {})
             meta["resumed_from_checkpoint"] = checkpoint.content_hash
             meta["resumed_at"] = datetime.now(UTC).isoformat()

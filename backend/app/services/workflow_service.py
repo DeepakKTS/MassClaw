@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.exceptions import NotFoundError, OrchestrationError
-from app.models.base import TaskStatus, WorkflowStatus
+from app.models.base import TERMINAL_WORKFLOW_STATES, TaskStatus, WorkflowStatus
 from app.models.task import Task
 from app.models.workflow import Workflow
 from app.schemas.common import PaginatedResponse, PaginationParams
@@ -115,14 +115,7 @@ class WorkflowService:
         completed = counts.completed or 0
         progress = (completed / total * 100) if total > 0 else 0
 
-        elapsed = None
-        if workflow.started_at:
-            end = workflow.completed_at or datetime.now(UTC)
-            if workflow.started_at.tzinfo is None:
-                started = workflow.started_at.replace(tzinfo=UTC)
-            else:
-                started = workflow.started_at
-            elapsed = (end - started).total_seconds()
+        elapsed = self._elapsed_seconds(workflow)
 
         return WorkflowStatusResponse(
             workflow_id=workflow.workflow_id,
@@ -135,8 +128,42 @@ class WorkflowService:
             budget_used=float(workflow.budget_used),
             budget_limit=float(workflow.budget_limit),
             started_at=workflow.started_at,
-            elapsed_seconds=round(elapsed, 1) if elapsed else None,
+            elapsed_seconds=round(elapsed, 1) if elapsed is not None else None,
         )
+
+    @staticmethod
+    def _elapsed_seconds(workflow: Workflow) -> float | None:
+        """Wall-clock seconds the workflow has been executing.
+
+        ``completed_at`` is only an end point for a workflow that is actually
+        finished. Nothing in the codebase ever resets it to ``None`` — verified
+        across all its writers — while ``started_at`` *is* re-stamped on every
+        execution (scheduler, resume, strategy_router). So a workflow that was
+        timed out by the approval janitor and then approved and resumed carries
+        a ``completed_at`` from the earlier attempt that now predates its own
+        ``started_at``.
+
+        Reading it unconditionally produced both halves of an observed bug: a
+        frozen elapsed time (neither operand moves again) that was also
+        negative (``completed_at`` < ``started_at``). Hence the status check,
+        and the clamp for any ordering we have not thought of.
+        """
+        if workflow.started_at is None:
+            return None
+
+        started = workflow.started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+
+        end: datetime | None = None
+        if workflow.status in TERMINAL_WORKFLOW_STATES and workflow.completed_at is not None:
+            end = workflow.completed_at
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=UTC)
+        if end is None:
+            end = datetime.now(UTC)
+
+        return max(0.0, (end - started).total_seconds())
 
     async def get_workflow_result(self, workflow_id: uuid.UUID) -> WorkflowResultResponse:
         """Get the final synthesized result of a completed workflow."""

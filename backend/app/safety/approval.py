@@ -29,6 +29,21 @@ _KEY_PREFIX: str = "approval"
 _PENDING_SET: str = f"{_KEY_PREFIX}:pending"
 _POLL_INTERVAL_SECONDS: float = 0.5
 
+#: Extra life given to the Redis key beyond the request's logical expiry.
+#:
+#: These used to be the same number: ``request_approval`` set the key TTL to
+#: ``timeout_seconds`` and ``expires_at`` to ``now + timeout_seconds``, so the
+#: payload disappeared at the exact moment the request became reapable. The
+#: janitor ticks every 30s, so it usually arrived to find the key gone — and
+#: on that path it could only drop the id from the pending set, leaving the
+#: owning workflow parked in AWAITING_APPROVAL with no terminal state and
+#: nothing watching it.
+#:
+#: Keeping the payload around well past expiry gives the janitor a wide window
+#: to observe the expired request and run the full path: mark expired, publish
+#: ``approval.expired``, write the CRDT decision twin, and fail the workflow.
+_EXPIRY_GRACE_SECONDS: int = 900
+
 # ---------------------------------------------------------------------------
 # Pydantic model (Redis-only; not a DB model)
 # ---------------------------------------------------------------------------
@@ -54,6 +69,26 @@ class ApprovalRequest(BaseModel):
     # resume primitive. ``None`` means no checkpoint was written (e.g. for
     # legacy approval flows that predate checkpointing).
     checkpoint_hash: str | None = None
+
+    def is_expired(self, *, now: datetime | None = None) -> bool:
+        """Whether this request is past its deadline.
+
+        Single source of truth for the question — it used to be re-derived in
+        four places with inconsistent handling, and one of them (the CRDT
+        store's pending view) simply never asked, which is how a four-month-old
+        request kept being served as actionable.
+
+        A malformed ``expires_at`` counts as expired: an approval nobody can
+        date is not one to keep waiting on, and treating it as live means it
+        never leaves the pending list.
+        """
+        try:
+            deadline = datetime.fromisoformat(self.expires_at)
+        except (TypeError, ValueError):
+            return True
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        return deadline <= (now or datetime.now(UTC))
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +175,11 @@ class ApprovalManager:
         key = self._key(request.request_id)
         payload = request.model_dump_json()
 
-        # Store with TTL and add to the pending set.
+        # Store with TTL and add to the pending set. The key deliberately
+        # outlives ``expires_at`` by _EXPIRY_GRACE_SECONDS so the janitor can
+        # still see the request when it goes to reap it — see that constant.
         async with self._redis.pipeline(transaction=True) as pipe:
-            pipe.set(key, payload, ex=timeout_seconds)
+            pipe.set(key, payload, ex=timeout_seconds + _EXPIRY_GRACE_SECONDS)
             pipe.sadd(_PENDING_SET, request.request_id)
             await pipe.execute()
 
@@ -209,7 +246,7 @@ class ApprovalManager:
                 continue
 
             # Check wall-clock expiry.
-            if datetime.fromisoformat(request.expires_at) <= datetime.now(UTC):
+            if request.is_expired():
                 expired_ids.append(rid)
                 continue
 
