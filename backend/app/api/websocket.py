@@ -30,7 +30,6 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
-        self._tasks: dict[str, asyncio.Task] = {}
 
     @property
     def total_connections(self) -> int:
@@ -59,11 +58,25 @@ class ConnectionManager:
             }
         )
 
+    def _discard(self, workflow_id: str, websocket: WebSocket) -> None:
+        """Drop one socket, and the workflow entry with it when it was the last.
+
+        This manager is a process-lifetime singleton and ``_connections`` is a
+        defaultdict, so an empty set left behind is a permanent entry — and it
+        surfaces through :meth:`get_status` on ``/system/metrics`` as a workflow
+        with zero clients. Reading through ``.get`` also means an unknown
+        workflow_id cannot create an entry just by being mentioned.
+        """
+        connections = self._connections.get(workflow_id)
+        if connections is None:
+            return
+        connections.discard(websocket)
+        if not connections:
+            del self._connections[workflow_id]
+
     def disconnect(self, websocket: WebSocket, workflow_id: str) -> None:
         """Remove a WebSocket connection."""
-        self._connections[workflow_id].discard(websocket)
-        if not self._connections[workflow_id]:
-            del self._connections[workflow_id]
+        self._discard(workflow_id, websocket)
 
         logger.info(
             "ws_disconnected",
@@ -72,7 +85,12 @@ class ConnectionManager:
         )
 
     async def broadcast_to_workflow(self, workflow_id: str, data: dict) -> None:
-        """Send a message to all WebSocket connections for a workflow."""
+        """Send a message to all WebSocket connections for a workflow.
+
+        A client that vanished without a close frame is only discovered here, so
+        this is the other place connections get cleaned up — and it has to prune
+        the same way ``disconnect`` does.
+        """
         dead: list[WebSocket] = []
         for ws in self._connections.get(workflow_id, set()):
             try:
@@ -81,7 +99,7 @@ class ConnectionManager:
                 dead.append(ws)
 
         for ws in dead:
-            self._connections[workflow_id].discard(ws)
+            self._discard(workflow_id, ws)
 
     async def broadcast_all(self, data: dict) -> None:
         """Send a message to ALL connected WebSocket clients."""

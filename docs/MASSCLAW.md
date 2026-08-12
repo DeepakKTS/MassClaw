@@ -831,7 +831,7 @@ Run these deliberately to surface real failures. Grouped by system.
 25. Resume with an approval that was `denied` → 409
 26. Double-resume same checkpoint → idempotent; same rows
 27. Approve same `request_id` twice → second call 409 "already approved"
-28. Expired approval (TTL ≤ 0) → `status=expired` in `wait_for_decision`
+28. Expired approval (TTL ≤ 0) → `status=expired` via the approval janitor (`ApprovalManager._mark_expired`)
 29. Resume on a peer that doesn't have the Workflow row yet → creates shadow Workflow
 
 ### Reflection / retry / replan

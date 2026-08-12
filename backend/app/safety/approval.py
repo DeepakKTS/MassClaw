@@ -8,7 +8,6 @@ in real time.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -27,7 +26,6 @@ logger = get_logger(__name__)
 
 _KEY_PREFIX: str = "approval"
 _PENDING_SET: str = f"{_KEY_PREFIX}:pending"
-_POLL_INTERVAL_SECONDS: float = 0.5
 
 #: Extra life given to the Redis key beyond the request's logical expiry.
 #:
@@ -334,67 +332,6 @@ class ApprovalManager:
         if raw is None:
             raise ValueError(f"Approval request '{request_id}' not found or expired.")
         return ApprovalRequest.model_validate_json(raw)
-
-    async def wait_for_decision(self, request_id: str, timeout: int = 300) -> ApprovalRequest:
-        """Poll Redis until a decision is made or the timeout elapses.
-
-        Parameters
-        ----------
-        request_id:
-            The unique ID of the request to watch.
-        timeout:
-            Maximum seconds to wait before returning an expired result.
-
-        Returns
-        -------
-        ApprovalRequest
-            The decided (or expired) request.
-        """
-        deadline = datetime.now(UTC) + timedelta(seconds=timeout)
-
-        while datetime.now(UTC) < deadline:
-            raw: str | None = await self._redis.get(self._key(request_id))
-
-            if raw is None:
-                # Key evicted -- treat as expired.
-                logger.warning("approval_wait_expired_key_missing", request_id=request_id)
-                return ApprovalRequest(
-                    request_id=request_id,
-                    workflow_id="unknown",
-                    action="unknown",
-                    policy_rule="unknown",
-                    status="expired",
-                    requested_at=datetime.now(UTC).isoformat(),
-                    expires_at=datetime.now(UTC).isoformat(),
-                )
-
-            request = ApprovalRequest.model_validate_json(raw)
-
-            if request.status in ("approved", "denied"):
-                return request
-
-            # Check if the request itself has expired.
-            if datetime.fromisoformat(request.expires_at) <= datetime.now(UTC):
-                return await self._mark_expired(request)
-
-            await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-
-        # Timeout reached -- mark as expired if still pending.
-        try:
-            request = await self.check_status(request_id)
-            if request.status == "pending":
-                return await self._mark_expired(request)
-            return request
-        except ValueError:
-            return ApprovalRequest(
-                request_id=request_id,
-                workflow_id="unknown",
-                action="unknown",
-                policy_rule="unknown",
-                status="expired",
-                requested_at=datetime.now(UTC).isoformat(),
-                expires_at=datetime.now(UTC).isoformat(),
-            )
 
     # ------------------------------------------------------------------
     # Internal helpers
