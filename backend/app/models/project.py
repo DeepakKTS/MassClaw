@@ -134,6 +134,7 @@ class SprintTask(Base, AuditMixin):
         UUID(as_uuid=True),
         ForeignKey("workflows.workflow_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     status: Mapped[str] = mapped_column(
         String(50),

@@ -37,11 +37,13 @@ class TrustEvent(Base):
         UUID(as_uuid=True),
         ForeignKey("workflows.workflow_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tasks.task_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     quality_score: Mapped[float] = mapped_column(Float, nullable=False)
     latency_score: Mapped[float] = mapped_column(Float, nullable=False)

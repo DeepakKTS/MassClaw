@@ -37,6 +37,7 @@ class AgentScore(Base):
         UUID(as_uuid=True),
         ForeignKey("workflows.workflow_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     quality: Mapped[float] = mapped_column(Float, nullable=False)
     speed: Mapped[float] = mapped_column(Float, nullable=False)

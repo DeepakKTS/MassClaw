@@ -67,6 +67,7 @@ class MemoryRecord(Base):
         UUID(as_uuid=True),
         ForeignKey("memory_records.memory_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     # ---------- CRDT / provenance fields (added in v1.1.0) ----------
     # Author DID — the agent/instance that produced this record.

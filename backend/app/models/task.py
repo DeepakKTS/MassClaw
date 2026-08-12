@@ -43,6 +43,7 @@ class Task(Base, AuditMixin):
         UUID(as_uuid=True),
         ForeignKey("tasks.task_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     assigned_agent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -72,6 +73,7 @@ class Task(Base, AuditMixin):
         UUID(as_uuid=True),
         ForeignKey("tasks.task_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
