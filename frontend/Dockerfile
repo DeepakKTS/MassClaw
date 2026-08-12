@@ -1,4 +1,6 @@
-FROM node:20-alpine AS builder
+# Keep this in step with NODE_VERSION in .github/workflows/ci.yml. Node 20
+# went end-of-life in April 2026.
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
@@ -6,7 +8,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/.next/standalone ./

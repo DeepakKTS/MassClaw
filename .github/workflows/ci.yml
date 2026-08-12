@@ -14,8 +14,16 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  # Matches frontend/Dockerfile. Node 18 went end-of-life in April 2025.
-  NODE_VERSION: "20"
+  # Matches frontend/Dockerfile. Keep the two equal — a split is what let a
+  # green local run ship a red CI before.
+  #
+  # 18 went end-of-life in April 2025 and 20 in April 2026. 20 is also below
+  # the floor jsdom 30 declares (`^22.22.2 || ^24.15.0 || >=26.0.0`): on 20
+  # its bundled undici calls `webidl.util.markAsUncloneable`, which does not
+  # exist there, and every jsdom test file dies on import. npm only *warns*
+  # on an engine mismatch, so `npm ci` succeeds and the failure surfaces as
+  # five unhandled errors and "no tests" instead of an install error.
+  NODE_VERSION: "22"
 
 jobs:
   backend:
