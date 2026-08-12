@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.cache_metrics import record_semantic_cache_event
 from app.core.events import EventBus
 from app.core.logging import get_logger
 from app.exceptions import BudgetExhaustedError
@@ -1770,6 +1771,11 @@ class WorkflowScheduler:
         And the content is re-checked against the poison markers on the way
         out, so a row that predates the write-side guard cannot keep
         masquerading as a 0.5ms success.
+
+        Outcomes are counted for ``/system/metrics``, but only lookups that
+        actually ran: with no embedding model the cache is disabled, not
+        missing, and counting that as a miss would report a 0% hit rate on a
+        node where nothing is wrong.
         """
         try:
             from sqlalchemy import text
@@ -1822,10 +1828,14 @@ class WorkflowScheduler:
             row = result.fetchone()
 
             if not row or row.similarity < settings.semantic_cache_similarity_threshold:
+                await record_semantic_cache_event(self.redis, "misses")
                 return None
 
             if not self._is_cacheable(row.content):
                 # Written before the guard existed, or by an older marker list.
+                # Counts as a miss — the caller still pays for the LLM call —
+                # plus a rejection, so the reason stays visible.
+                await record_semantic_cache_event(self.redis, "misses", "rejected")
                 logger.warning(
                     "semantic_cache_poisoned_entry_rejected",
                     capability=node.capability,
@@ -1834,6 +1844,7 @@ class WorkflowScheduler:
                 )
                 return None
 
+            await record_semantic_cache_event(self.redis, "hits")
             logger.info(
                 "semantic_cache_hit",
                 capability=node.capability,
@@ -1852,6 +1863,7 @@ class WorkflowScheduler:
             # Fail open: a broken cache costs an LLM call, not the workflow.
             # Logged at warning because the only other symptom is latency —
             # at debug this failed silently for the life of the process.
+            await record_semantic_cache_event(self.redis, "misses")
             logger.warning(
                 "semantic_cache_error",
                 capability=node.capability,
@@ -1943,6 +1955,7 @@ class WorkflowScheduler:
             )
             self.session.add(cache_record)
             await self.session.flush()
+            await record_semantic_cache_event(self.redis, "stores")
             logger.debug(
                 "semantic_cache_stored",
                 capability=node.capability,

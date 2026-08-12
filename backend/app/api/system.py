@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.cache_metrics import semantic_cache_snapshot
 from app.core.database import get_db_session, get_engine
 from app.core.redis import get_redis
 from app.embeddings.service import get_embedding_service
@@ -107,6 +108,12 @@ async def prometheus_metrics(
     emb = get_embedding_service()
     embedding_status = emb.get_status()
 
+    # Semantic result cache. A hit costs zero credits and 0.5ms, so it is
+    # otherwise indistinguishable from a task that was simply cheap — these
+    # counters are the only way to tell a working cache from a dead one, or to
+    # explain a drop in spend.
+    cache_counters = await semantic_cache_snapshot(redis)
+
     # WebSocket connections
     try:
         from app.api.websocket import get_ws_manager
@@ -129,6 +136,7 @@ async def prometheus_metrics(
         "database_pool": pool_status,
         "redis_memory": redis_memory,
         "embedding_service": embedding_status,
+        "semantic_cache": cache_counters,
         "websocket": ws_status,
     }
 
