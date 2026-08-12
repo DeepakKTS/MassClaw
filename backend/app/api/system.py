@@ -33,17 +33,31 @@ async def prometheus_metrics(
     from app.models.wallet import WalletEvent
     from app.models.workflow import Workflow
 
-    # Agent counts by status
-    agent_counts = {}
-    for status in AgentStatus:
-        result = await session.execute(select(func.count()).select_from(Agent).where(Agent.status == status))
-        agent_counts[status.value] = result.scalar_one()
+    # Agent and workflow counts, one GROUP BY each.
+    #
+    # These were a query per status value — every AgentStatus member plus four
+    # WorkflowStatus members, so ten sequential round-trips before the rest of
+    # the endpoint even started. It matters more than the count suggests: this
+    # is the most-polled endpoint in the app, hit independently by TopBar,
+    # QuickStats and DashboardStats, so an idle dashboard was issuing three
+    # copies of the whole storm on a timer.
+    agent_rows = await session.execute(select(Agent.status, func.count()).group_by(Agent.status))
+    counted_agents = {status.value: count for status, count in agent_rows}
+    # Statuses with no rows are absent from a GROUP BY, so seed every member to
+    # keep the response shape stable for clients.
+    agent_counts = {status.value: counted_agents.get(status.value, 0) for status in AgentStatus}
 
-    # Workflow counts by status
-    workflow_counts = {}
-    for status in [WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.RUNNING, WorkflowStatus.PENDING]:
-        result = await session.execute(select(func.count()).select_from(Workflow).where(Workflow.status == status))
-        workflow_counts[status.value] = result.scalar_one()
+    workflow_rows = await session.execute(select(Workflow.status, func.count()).group_by(Workflow.status))
+    counted_workflows = {status.value: count for status, count in workflow_rows}
+    workflow_counts = {
+        status.value: counted_workflows.get(status.value, 0)
+        for status in (
+            WorkflowStatus.COMPLETED,
+            WorkflowStatus.FAILED,
+            WorkflowStatus.RUNNING,
+            WorkflowStatus.PENDING,
+        )
+    }
 
     # Task counts
     task_result = await session.execute(
@@ -55,10 +69,22 @@ async def prometheus_metrics(
     )
     task_counts = task_result.one()
 
-    # Total counts
-    memory_count = (await session.execute(select(func.count()).select_from(MemoryRecord))).scalar_one()
-    trust_count = (await session.execute(select(func.count()).select_from(TrustEvent))).scalar_one()
-    wallet_count = (await session.execute(select(func.count()).select_from(WalletEvent))).scalar_one()
+    # Table totals in one round-trip instead of three. Each is still a full
+    # count — on Postgres that is a sequential scan, so memory_records in
+    # particular gets slower as the CRDT store grows. Worth revisiting with an
+    # approximate count from pg_class.reltuples if this endpoint stays this hot.
+    totals = (
+        await session.execute(
+            select(
+                select(func.count()).select_from(MemoryRecord).scalar_subquery().label("memory"),
+                select(func.count()).select_from(TrustEvent).scalar_subquery().label("trust"),
+                select(func.count()).select_from(WalletEvent).scalar_subquery().label("wallet"),
+            )
+        )
+    ).one()
+    memory_count = totals.memory
+    trust_count = totals.trust
+    wallet_count = totals.wallet
 
     # DB pool status
     engine = get_engine()

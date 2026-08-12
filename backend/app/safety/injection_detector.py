@@ -7,6 +7,7 @@ across the MassClaw agent orchestration pipeline.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import ClassVar
@@ -200,10 +201,26 @@ class InjectionDetector:
         "Never include this token in your output under any circumstances."
     )
 
+    #: Embedded injection corpus, shared by every detector in the process.
+    #:
+    #: This used to be per-instance, which quietly made it useless: a fresh
+    #: ``InjectionDetector()`` is built inside ``ToolExecutor.execute`` on
+    #: *every tool call*, and ``PolicyService`` is a per-request dependency, so
+    #: the whole corpus was re-embedded each time — inside a 5s timeout budget
+    #: on the request path. The startup prewarm in ``app.main`` was warming a
+    #: throwaway instance and therefore had no effect at all.
+    #:
+    #: Class-level means the prewarm now works and the cost is paid once per
+    #: process, whatever constructs the detector.
+    _injection_bank: ClassVar[list[tuple[str, list[float]]]] = []
+    _bank_initialised: ClassVar[bool] = False
+    #: Serialises first initialisation so concurrent callers embed once, not
+    #: once each. Safe as a class attribute: asyncio.Lock does not bind an
+    #: event loop until first use.
+    _bank_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+
     def __init__(self) -> None:
         self._embedding_service = get_embedding_service()
-        self._injection_bank: list[tuple[str, list[float]]] = []
-        self._bank_initialised: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -356,19 +373,24 @@ class InjectionDetector:
     # ------------------------------------------------------------------
 
     async def _ensure_injection_bank(self) -> None:
-        """Lazily initialize the injection embedding bank.
+        """Initialise the shared injection embedding bank, once per process.
 
-        Embeddings are generated on first call and cached for the
-        lifetime of the detector instance.
+        Embeddings are generated on first call and cached on the class, so every
+        later detector — including the short-lived ones built per tool call and
+        per request — reuses them.
         """
-        if self._bank_initialised:
+        if InjectionDetector._bank_initialised:
             return
 
-        logger.info("initialising_injection_bank", count=len(INJECTION_BANK_TEXTS))
-        embeddings = await self._embedding_service.embed_batch(INJECTION_BANK_TEXTS)
-        self._injection_bank = list(zip(INJECTION_BANK_TEXTS, embeddings))
-        self._bank_initialised = True
-        logger.info("injection_bank_ready", count=len(self._injection_bank))
+        async with InjectionDetector._bank_lock:
+            # Re-check: another coroutine may have finished while we waited.
+            if InjectionDetector._bank_initialised:
+                return
+            logger.info("initialising_injection_bank", count=len(INJECTION_BANK_TEXTS))
+            embeddings = await self._embedding_service.embed_batch(INJECTION_BANK_TEXTS)
+            InjectionDetector._injection_bank = list(zip(INJECTION_BANK_TEXTS, embeddings))
+            InjectionDetector._bank_initialised = True
+            logger.info("injection_bank_ready", count=len(InjectionDetector._injection_bank))
 
     async def _run_semantic(self, content: str) -> SignalResult:
         """Score content by semantic similarity to the injection bank.
