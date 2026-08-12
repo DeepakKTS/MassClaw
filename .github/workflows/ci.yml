@@ -132,6 +132,17 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # Typecheck and tests run before the build: both are far quicker than
+      # `next build`, so a type error or a failing test reports in seconds
+      # rather than after a full compile.
+      - name: Type check
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: frontend
+        run: npm test
+
       - name: Build
         working-directory: frontend
         run: npm run build

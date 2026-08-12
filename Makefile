@@ -1,6 +1,6 @@
 .PHONY: help dev backend frontend celery-worker celery-beat \
 	migrate migrate-create migrate-rollback seed \
-	test test-db-setup test-unit test-integration test-e2e test-cov \
+	test test-db-setup test-unit test-integration test-e2e test-cov test-frontend \
 	lint format typecheck ci-local clean \
 	docker-up docker-down docker-logs \
 	federation-up federation-down federation-test federation-summary \
@@ -99,28 +99,32 @@ format: ## Format code
 typecheck: ## Run type checker
 	cd backend && mypy app/
 
+test-frontend: ## Run the frontend Vitest suite
+	cd frontend && npm test
+
 # Local CI mirror — a SUPERSET of .github/workflows/ci.yml.
 #
 # Every check CI runs is run here, in the same order, so a green ci-local
-# means CI has nothing new to tell you. Two checks are stricter than CI on
-# purpose and are labelled [extra]: the frontend typecheck (CI has no tsc
-# step) and mypy being visible rather than swallowed.
+# means CI has nothing new to tell you. One check is stricter than CI on
+# purpose and is labelled [extra]: mypy being visible rather than swallowed.
 #
 # This used to claim "EXACT same checks" while both omitting the frontend
 # build that CI runs and adding a tsc step that CI does not — so it could
-# pass while CI failed, and vice versa. Keep the two in sync when either
+# pass while CI failed, and vice versa. The frontend typecheck is now a real
+# CI step, so it is no longer [extra]. Keep the two in sync when either
 # changes.
 #
 # Note: CI installs with `-c backend/constraints.txt`. If a version-specific
 # failure reproduces in CI but not here, compare against that file first.
-ci-local: ## Run every CI check locally, plus a frontend typecheck
+ci-local: ## Run every CI check locally
 	@echo "=== Backend: ruff check ===" && cd backend && ruff check app/
 	@echo "=== Backend: ruff format --check ===" && cd backend && ruff format --check app/
 	@echo "=== Backend: mypy [extra: advisory in CI] ===" && cd backend && mypy app/ || true
 	@echo "=== Backend: pytest (unit + integration) ===" && cd backend && pytest tests/unit/ tests/integration/ -q --tb=short
-	@echo "=== Frontend: tsc [extra: not in CI] ===" && cd frontend && npx tsc --noEmit
-	@echo "=== Frontend: lint ===" && cd frontend && npm run lint
+	@echo "=== Frontend: typecheck ===" && cd frontend && npm run typecheck
+	@echo "=== Frontend: test ===" && cd frontend && npm test
 	@echo "=== Frontend: build ===" && cd frontend && npm run build
+	@echo "=== Frontend: lint ===" && cd frontend && npm run lint
 	@echo "All CI checks passed locally. Safe to push."
 
 # Federation demo (3-node CRDT convergence scenario — the GATING Phase 1 proof)
