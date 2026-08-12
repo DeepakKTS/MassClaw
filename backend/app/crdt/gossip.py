@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -157,11 +158,14 @@ class GossipService:
                 report.duration_ms = (time.monotonic() - started) * 1000.0
                 return report
 
-            known = await self._load_known_workflow_ids()
+            # Accumulates across batches; each batch adds only the local state
+            # its own records need. See _extend_known.
+            known = _Known()
 
             for batch in _chunks(missing_hashes, _FETCH_BATCH_SIZE):
                 records = await peer.fetch_records(batch)
                 report.records_fetched += len(records)
+                await self._extend_known(known, records)
                 for record in records:
                     persisted = await self._persist_peer_record(record, known, report)
                     if persisted:
@@ -198,25 +202,54 @@ class GossipService:
                     missing.append(h)
         return missing
 
-    async def _load_known_workflow_ids(self) -> _Known:
-        """Load the set of workflow IDs this node knows about.
+    async def _extend_known(self, known: _Known, records: Sequence[PeerRecord]) -> None:
+        """Load the local state *this batch* needs, and nothing else.
 
-        The FK constraint on ``memory_records.workflow_id`` means we cannot
-        persist a peer's record if the corresponding workflow row is absent
-        here. Loading the set once per round keeps the per-record check fast.
+        Two questions have to be answered before a peer record can be
+        persisted: does the workflow it names exist here (the FK on
+        ``memory_records.workflow_id`` has to resolve), and do we already hold
+        its content hash?
+
+        Both were previously answered by loading the whole of ``workflows``
+        plus every non-null ``content_hash`` in ``memory_records`` into Python
+        sets, once per round — O(total records) of memory and transfer on a
+        tick that runs every five seconds in demo mode, to check as few as
+        three hashes. Answering per record instead would be the opposite
+        mistake, which the old docstring rightly warned about.
+
+        So the questions are asked *of the batch*: at most
+        ``_FETCH_BATCH_SIZE`` hashes and the handful of workflows they name.
+        Two queries, bounded by the batch, whatever the tables hold.
+
+        ``known`` accumulates across the batches of a round, so anything
+        already established — including a hash persisted or a workflow
+        shadowed a batch ago — is not looked up again. Deliberately no
+        ``record_state`` filter on the hash lookup: missing hashes are computed
+        against the *active* bucket listing, so a record we hold as SUPERSEDED
+        comes back over the wire and must still be recognised as a duplicate.
         """
-        known = _Known()
-        result = await self._session.execute(select(Workflow.workflow_id))
-        for row in result.scalars().all():
-            known.workflow_ids.add(row)
-        # Pre-load the hashes we already have so we never re-persist.
-        hash_result = await self._session.execute(
-            select(MemoryRecord.content_hash).where(MemoryRecord.content_hash.isnot(None))
-        )
-        for row in hash_result.scalars().all():
-            if row:
-                known.content_hashes.add(row)
-        return known
+        unseen_hashes = {r.content_hash for r in records if r.content_hash} - known.content_hashes
+        if unseen_hashes:
+            hash_result = await self._session.execute(
+                select(MemoryRecord.content_hash).where(MemoryRecord.content_hash.in_(unseen_hashes))
+            )
+            known.content_hashes.update(h for h in hash_result.scalars().all() if h)
+
+        named_workflows: set[uuid.UUID] = set()
+        for record in records:
+            if not record.workflow_id:
+                continue
+            try:
+                named_workflows.add(uuid.UUID(record.workflow_id))
+            except (TypeError, ValueError):
+                # _persist_peer_record reports this as invalid; nothing to load.
+                continue
+        unseen_workflows = named_workflows - known.workflow_ids
+        if unseen_workflows:
+            wf_result = await self._session.execute(
+                select(Workflow.workflow_id).where(Workflow.workflow_id.in_(unseen_workflows))
+            )
+            known.workflow_ids.update(wf_result.scalars().all())
 
     async def _auto_shadow_workflow(self, workflow_uuid: uuid.UUID, record: PeerRecord) -> bool:
         """Create a minimal Workflow row so a gossiped record's FK resolves.
