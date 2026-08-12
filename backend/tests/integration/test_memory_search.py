@@ -90,3 +90,54 @@ class TestMemorySearch:
         )
         # Deleted record (confidence=0) should be excluded
         assert not any(r.memory.memory_id == record.memory_id for r in results)
+
+
+class TestApproximateSearchRecall:
+    """Guards against pgvector's default ``ivfflat.probes = 1``.
+
+    The embedding index is built with ``lists = 100``. At probes=1 an
+    approximate search scans a single list, so on a small table the one
+    matching row is very unlikely to be in the list that gets scanned — the
+    query comes back empty even for a near-identical record. Measured on a
+    freshly created database: a record with cosine similarity 0.75 to the query
+    was invisible at probes=1 and found at probes=100.
+
+    That is a correctness failure for shared agent memory (a fresh node would
+    answer "nothing known" about something it had just written), and it made
+    this file order-dependent — it only passed once earlier tests had put enough
+    embeddings in the table.
+    """
+
+    @pytest_asyncio.fixture
+    async def service(self, db_session, redis_client):
+        return MemoryService(db_session, redis_client)
+
+    @pytest.mark.asyncio
+    async def test_single_record_is_findable_in_an_otherwise_empty_table(self, service, sample_workflow):
+        """The minimal case the old default got wrong."""
+        await service.write_memory(
+            MemoryWriteRequest(
+                workflow_id=sample_workflow.workflow_id,
+                memory_type=MemoryType.RESULT,
+                content="Ambulance turnaround at the trauma bay averages 12 minutes.",
+                confidence=0.9,
+            )
+        )
+
+        results = await service.query_memory(
+            MemoryQueryRequest(
+                query="how long do ambulances take to turn around",
+                workflow_id=sample_workflow.workflow_id,
+                min_similarity=0.2,
+                top_k=5,
+            )
+        )
+
+        assert len(results) == 1, "a lone strongly-matching record must not be lost to ANN recall"
+        assert results[0].similarity > 0.3
+
+    @pytest.mark.asyncio
+    async def test_probes_are_configured_above_the_pgvector_default(self):
+        from app.config import get_settings
+
+        assert get_settings().memory_ivfflat_probes > 1

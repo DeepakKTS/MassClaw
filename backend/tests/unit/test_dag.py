@@ -112,3 +112,56 @@ class TestDAG:
         assert len(path) >= 3
         assert path[0].node_id == "t1"
         assert path[-1].node_id == "t5"
+
+
+class TestBudgetTruncationReporting:
+    """Distinguishing "a task failed" from "we ran out of money".
+
+    ``mark_failed`` recursively SKIPs the failed node's whole descendant
+    subtree, and a budget-exhausted reserve is one of the ways a node fails. So
+    a single node running over budget could silently drop most of a workflow —
+    while it still reported partial success, because ``completed_count > 0``.
+    Neither the skipped nodes nor the reason were surfaced anywhere.
+    """
+
+    def _chain(self) -> DAG:
+        return DAG(
+            [
+                DAGNode(node_id="t1", capability="intake", description="Step 1", depends_on=[]),
+                DAGNode(node_id="t2", capability="research", description="Step 2", depends_on=["t1"]),
+                DAGNode(node_id="t3", capability="analysis", description="Step 3", depends_on=["t2"]),
+                DAGNode(node_id="t4", capability="summary", description="Step 4", depends_on=["t3"]),
+            ]
+        )
+
+    def test_skipped_count_reports_the_dropped_subtree(self):
+        dag = self._chain()
+        dag.mark_completed("t1")
+        dag.mark_failed("t2", error="Budget insufficient for research: need ~76.8 cr")
+
+        assert dag.failed_count == 1
+        assert dag.skipped_count == 2, "t3 and t4 were never attempted"
+        assert dag.completed_count == 1
+
+    def test_budget_failures_are_identified_by_reason(self):
+        dag = self._chain()
+        dag.mark_completed("t1")
+        dag.mark_failed("t2", error="Budget insufficient for research: need ~76.8 cr")
+
+        assert dag.nodes_failed_for_budget() == ["t2"]
+
+    def test_ordinary_failures_are_not_reported_as_budget_failures(self):
+        dag = self._chain()
+        dag.mark_completed("t1")
+        dag.mark_failed("t2", error="LLM call failed: upstream timeout")
+
+        assert dag.nodes_failed_for_budget() == []
+        assert dag.failed_count == 1
+
+    def test_clean_run_reports_neither(self):
+        dag = self._chain()
+        for node_id in ("t1", "t2", "t3", "t4"):
+            dag.mark_completed(node_id)
+
+        assert dag.skipped_count == 0
+        assert dag.nodes_failed_for_budget() == []

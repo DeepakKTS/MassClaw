@@ -16,7 +16,7 @@ from app.core.logging import get_logger
 from app.exceptions import BudgetExhaustedError
 from app.llm.base import LLMResponse
 from app.llm.router import get_model_router
-from app.llm.token_counter import tokens_to_credits
+from app.llm.token_counter import estimate_cost, tokens_to_credits
 from app.models.agent import Agent
 from app.models.base import MemoryType, TaskStatus, WorkflowStatus
 from app.models.task import Task
@@ -31,6 +31,71 @@ from app.services.trust_service import TrustService
 from app.services.wallet_service import WalletService
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tiered model cascade
+# ---------------------------------------------------------------------------
+# Cheap-but-capable model for mechanical work, stronger model for judgement
+# calls. These were function-local to the execution phase, which meant the
+# Phase 1 budget estimator could not see them and had to guess from a
+# per-agent average instead — the estimate could not react to a 3.75x price
+# difference it had no way to observe. Module level so both phases share one
+# definition; ``_select_model`` is the only thing that reads them.
+
+HAIKU_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "intake",
+        "classify",
+        "extract-requirements",
+        "data-retrieval",
+        "literature-review",
+        "summarization",
+    }
+)
+
+SONNET_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "verification",
+        "quality-check",
+        "consistency-audit",
+        "risk-assessment",
+        "compliance-check",
+        "safety-analysis",
+        "optimization",
+        "process-analysis",
+        "report-generation",
+        "executive-brief",
+        "cost-analysis",
+    }
+)
+
+HAIKU_MODEL: str = "claude-haiku-4-5-20251001"
+SONNET_MODEL: str = "claude-sonnet-5"
+
+#: Input tokens assumed when sizing a reservation.
+#:
+#: Phase 1 reserves budget before Phase 2 builds the prompt, so the real input
+#: length is not knowable yet. This is a deliberately generous stand-in for a
+#: system prompt plus accumulated upstream context.
+_ASSUMED_PROMPT_TOKENS: int = 6000
+
+#: Fraction of the tool-loop iteration ceiling a reservation is sized for.
+#:
+#: ``_run_tool_loop`` can bill up to ``tool_max_iterations`` LLM calls plus tool
+#: executions as one node cost, so sizing for a single call — which is what the
+#: old estimate effectively did — is guaranteed to come up short on any node
+#: that uses tools.
+#:
+#: Reserving the *full* ceiling is not the answer either. At real Claude 5
+#: prices one Sonnet round is already ~48 credits, so a full-ceiling reservation
+#: lands near 165 and a 100-credit workflow (what harness scenario s9 asks for)
+#: would fail to schedule its first node. The reservation is only a
+#: pre-authorisation; the actual protection against overspend is
+#: ``_can_afford_another_round``, checked before every extra round. So this is
+#: tuned to comfortably cover a typical node — around 77 credits for Sonnet,
+#: against the 64 observed on a real one — and the loop gate handles the tail.
+_ITERATION_ALLOWANCE: float = 0.15
 
 
 class SchedulerPausedForApproval(Exception):  # noqa: N818 — control-flow sentinel, not an error
@@ -296,7 +361,7 @@ class WorkflowScheduler:
                 # idempotency_key scoped to (workflow, node) so outer-loop
                 # re-entries after a retry don't burn budget on duplicate
                 # RESERVE events (Fix C — Day 22).
-                estimated_cost = self._estimate_node_cost(agent)
+                estimated_cost = self._estimate_node_cost(node, agent)
                 reserve_key = f"{workflow.workflow_id}:{node.node_id}:reserve"
                 try:
                     reservation = await self.wallet_service.reserve_budget(
@@ -574,46 +639,16 @@ class WorkflowScheduler:
                     task_rec.error_message = None
                     await self.session.flush()
 
-            # Phase 2: Run LLM calls in parallel (budget already reserved)
-            # Tiered Model Cascade: Haiku for simple tasks, Sonnet for complex/verification
-            HAIKU_CAPABILITIES = {
-                "intake",
-                "classify",
-                "extract-requirements",
-                "data-retrieval",
-                "literature-review",
-                "summarization",
-            }
-            SONNET_CAPABILITIES = {
-                "verification",
-                "quality-check",
-                "consistency-audit",
-                "risk-assessment",
-                "compliance-check",
-                "safety-analysis",
-                "optimization",
-                "process-analysis",
-                "report-generation",
-                "executive-brief",
-                "cost-analysis",
-            }
+            # Phase 2: Run LLM calls in parallel (budget already reserved).
+            # Model choice comes from _select_model — the same call the budget
+            # estimator in Phase 1 makes, so the two cannot disagree.
 
             async def _llm_call(node: DAGNode) -> tuple[DAGNode, LLMResponse | Exception]:
                 task_rec, agent, context = node_contexts[node.node_id]
                 system_prompt = AGENT_PROMPTS.get(node.capability, DEFAULT_AGENT_PROMPT)
                 user_prompt = self._build_agent_prompt(node, context)
 
-                # Tiered model selection
-                if node.capability in HAIKU_CAPABILITIES and node.estimated_complexity != "high":
-                    model = "claude-haiku-4-5-20251001"
-                    max_tok = 1000
-                elif node.capability in SONNET_CAPABILITIES or node.estimated_complexity == "high":
-                    model = "claude-sonnet-5"
-                    max_tok = 2000
-                else:
-                    # Default: Sonnet for unknown capabilities
-                    model = "claude-sonnet-5"
-                    max_tok = 1200
+                model, max_tok = self._select_model(node)
 
                 # Strategy 3: Semantic Result Cache — check before calling LLM
                 cached_result = await self._check_semantic_cache(node, user_prompt)
@@ -898,6 +933,31 @@ class WorkflowScheduler:
             final_result["failed_tasks"] = dag.failed_count
         else:
             workflow.status = WorkflowStatus.COMPLETED
+
+        # Say plainly when work was dropped for lack of budget.
+        #
+        # A budget-exhausted node calls dag.mark_failed, which recursively SKIPs
+        # its whole descendant subtree — so one node running over could silently
+        # delete most of a workflow while it still reported partial success on
+        # the strength of completed_count > 0. Skipped nodes were not surfaced
+        # anywhere at all.
+        starved_nodes = dag.nodes_failed_for_budget()
+        if dag.skipped_count:
+            final_result["skipped_tasks"] = dag.skipped_count
+        if starved_nodes:
+            final_result["budget_exhausted"] = True
+            final_result["budget_exhausted_tasks"] = starved_nodes
+            final_result["budget_limit"] = float(workflow.budget_limit)
+            final_result["budget_used"] = float(workflow.budget_used or 0)
+            logger.warning(
+                "workflow_truncated_by_budget",
+                workflow_id=str(workflow.workflow_id),
+                starved_nodes=starved_nodes,
+                skipped=dag.skipped_count,
+                completed=dag.completed_count,
+                budget_limit=float(workflow.budget_limit),
+                budget_used=float(workflow.budget_used or 0),
+            )
 
         if synthesis_failed:
             final_result["synthesis_failed"] = True
@@ -1412,6 +1472,31 @@ class WorkflowScheduler:
                 "Otherwise, provide your final response."
             )
 
+            # Budget gate before spending on another round.
+            #
+            # This is where the workflow budget is actually enforced. The Phase 1
+            # reservation is only a pre-authorisation sized from a heuristic, and
+            # ``WalletService.charge`` cannot refuse anything — by the time it
+            # runs the money is already spent, which is why it has no cap. The
+            # loop is the last point where stopping is still free.
+            #
+            # Without this, one node could bill several calls against a
+            # reservation sized for roughly one, inflate ``budget_used``, and
+            # leave the *next* node's reserve to fail — and a failed reserve
+            # calls ``dag.mark_failed``, which recursively SKIPs that node's
+            # whole descendant subtree. A single overspend upstream silently
+            # deleted unrelated downstream work.
+            if not self._can_afford_another_round(workflow, total_cost, model, max_tok):
+                logger.warning(
+                    "tool_loop_stopped_on_budget",
+                    node_id=node.node_id,
+                    iteration=iteration + 1,
+                    spent_credits=round(tokens_to_credits(total_cost), 2),
+                    budget_limit=float(workflow.budget_limit),
+                    budget_used=float(workflow.budget_used or 0),
+                )
+                break
+
         # Fix A — Day 22: exhaustion fallback. Force a tools=None summary
         # call so Claude can't keep requesting tools.
         summary_prompt = (
@@ -1422,6 +1507,23 @@ class WorkflowScheduler:
             "Synthesise your final response from the tool results above. "
             "If the information is insufficient, say so clearly and stop."
         )
+        # The salvage call is still a call. If the budget cannot cover it there
+        # is nothing to salvage with, and spending anyway would defeat the gate
+        # above — so return what we have and let the caller mark the node
+        # FAILED, with the reason recorded rather than inferred.
+        if not self._can_afford_another_round(workflow, total_cost, model, max_tok):
+            assert resp is not None, "tool loop must have produced at least one response"
+            logger.warning(
+                "tool_loop_budget_exhausted_before_summary",
+                node_id=node.node_id,
+                spent_credits=round(tokens_to_credits(total_cost), 2),
+            )
+            resp.cost = total_cost
+            resp.metadata["tool_calls"] = all_tool_calls
+            resp.metadata["budget_truncated"] = True
+            resp.content = ""
+            return resp
+
         try:
             summary = await self.model_router.generate(
                 prompt=summary_prompt,
@@ -1539,10 +1641,76 @@ class WorkflowScheduler:
         )
 
     @staticmethod
-    def _estimate_node_cost(agent: Agent) -> float:
-        """Estimate task cost in credits for budget reservation."""
-        avg_cost_usd = (agent.cost_profile or {}).get("avg_cost_per_call", 0.01)
-        return tokens_to_credits(Decimal(str(avg_cost_usd))) * 1.5  # 50% buffer
+    def _can_afford_another_round(
+        workflow: Workflow,
+        spent_this_node: Decimal,
+        model: str,
+        max_output_tokens: int,
+    ) -> bool:
+        """Whether the workflow can still pay for one more LLM call.
+
+        ``workflow.budget_used`` covers nodes already charged; ``spent_this_node``
+        is what the current tool loop has run up but not yet charged. Both have
+        to come off the limit, or a loop could spend the same headroom twice.
+
+        Sized against this model's own output ceiling, so a Sonnet round is held
+        to a higher bar than a Haiku one.
+        """
+        limit = float(workflow.budget_limit or 0)
+        already_charged = float(workflow.budget_used or 0)
+        remaining = limit - already_charged - tokens_to_credits(spent_this_node)
+        next_round = tokens_to_credits(estimate_cost(_ASSUMED_PROMPT_TOKENS, max_output_tokens, model))
+        return remaining >= next_round
+
+    @staticmethod
+    def _select_model(node: DAGNode) -> tuple[str, int]:
+        """Pick the model and output ceiling for a node.
+
+        Single source of truth, called from both the Phase 1 budget estimate
+        and the Phase 2 execution path. When these were separate, the estimator
+        could not know whether a node would run on Haiku or Sonnet — a 3.75x
+        price difference — so every reservation was a guess.
+        """
+        if node.capability in HAIKU_CAPABILITIES and node.estimated_complexity != "high":
+            return HAIKU_MODEL, 1000
+        if node.capability in SONNET_CAPABILITIES or node.estimated_complexity == "high":
+            return SONNET_MODEL, 2000
+        # Unknown capability: assume it needs judgement.
+        return SONNET_MODEL, 1200
+
+    @staticmethod
+    def _estimate_node_cost(node: DAGNode, agent: Agent) -> float:
+        """Credits to reserve before running a node.
+
+        Built from what actually drives the bill — the model, its output
+        ceiling, and the fact that the tool loop charges several LLM calls plus
+        tool executions as one node cost — rather than from
+        ``cost_profile["avg_cost_per_call"] * 1.5``, which was blind to all
+        three. That estimate reserved 12 credits for a node that cost 64.23,
+        and the overspend then starved the next node badly enough that its
+        whole subtree was skipped, including the task meant to trigger an
+        approval gate.
+
+        ``agent`` is still accepted and used only as a floor: an agent with a
+        genuinely expensive profile should not be under-reserved. It is
+        deliberately not the primary input, because a per-agent average cannot
+        know which model this particular node will use.
+        """
+        model, max_output_tokens = WorkflowScheduler._select_model(node)
+
+        per_call_usd = estimate_cost(
+            input_tokens=_ASSUMED_PROMPT_TOKENS,
+            output_tokens=max_output_tokens,
+            model=model,
+        )
+        iterations = 1.0 + (get_settings().tool_max_iterations - 1) * _ITERATION_ALLOWANCE
+        estimated = tokens_to_credits(per_call_usd) * iterations
+
+        # Floor: never reserve less than the agent's own stated average.
+        profile_usd = (agent.cost_profile or {}).get("avg_cost_per_call", 0.0)
+        profile_floor = tokens_to_credits(Decimal(str(profile_usd))) * 1.5
+
+        return max(estimated, profile_floor)
 
     async def _publish_progress(
         self,
@@ -1600,6 +1768,14 @@ class WorkflowScheduler:
 
             # Format as pgvector-compatible string: [0.1,0.2,...]
             embedding_str = f"[{','.join(str(x) for x in prompt_embedding)}]"
+
+            # Widen the ivfflat search for the same reason MemoryService does:
+            # pgvector's default probes=1 scans one of 100 lists, which on a
+            # small table misses matches outright. Here that only costs a
+            # needless LLM call rather than correctness, but a cache that
+            # silently never hits is not much of a cache.
+            probes = max(1, int(get_settings().memory_ivfflat_probes))
+            await self.session.execute(text(f"SET LOCAL ivfflat.probes = {probes}"))
 
             # Query memory records for similar completed task outputs
             # Use CAST() instead of :: to avoid SQLAlchemy bind-param collision

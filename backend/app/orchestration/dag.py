@@ -208,6 +208,29 @@ class DAG:
         return sum(1 for n in self._nodes.values() if n.status == TaskStatus.FAILED)
 
     @property
+    def skipped_count(self) -> int:
+        """Nodes never attempted because an ancestor failed.
+
+        Worth reporting separately from ``failed_count``: a single failure can
+        skip a whole subtree, so "1 failed" and "1 failed, 6 skipped" describe
+        very different outcomes.
+        """
+        return sum(1 for n in self._nodes.values() if n.status == TaskStatus.SKIPPED)
+
+    def nodes_failed_for_budget(self) -> list[str]:
+        """Node ids that failed because the workflow ran out of budget.
+
+        Budget exhaustion is not a task-level error — nothing was wrong with the
+        work. It means the workflow could not afford to continue, and the caller
+        needs to be able to say so rather than reporting a generic failure.
+        """
+        return [
+            n.node_id
+            for n in self._nodes.values()
+            if n.status == TaskStatus.FAILED and (n.error or "").lower().startswith("budget insufficient")
+        ]
+
+    @property
     def progress_percent(self) -> float:
         total = len(self._nodes)
         if total == 0:

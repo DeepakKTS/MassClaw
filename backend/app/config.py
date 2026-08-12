@@ -121,6 +121,20 @@ class Settings(BaseSettings):
     memory_default_ttl_hours: int = 168
     memory_freshness_decay_lambda: float = 0.01
     memory_min_similarity_threshold: float = 0.5
+    # Lists scanned per pgvector ivfflat search. The index is built with
+    # lists=100 (see MemoryRecord.__table_args__), and pgvector's default of 1
+    # scans a single list — which silently returns *nothing* when the table is
+    # small, because the one relevant row is very unlikely to sit in the list
+    # that gets scanned. Verified: a record with cosine similarity 0.75 to the
+    # query was invisible at probes=1 and found at probes=100.
+    #
+    # Defaulting to the full list count makes search exact: recall matters more
+    # than latency for shared agent memory, where a miss means an agent
+    # silently re-derives something it already knew. Lower it to trade recall
+    # for speed once the table is large enough for that to matter (pgvector
+    # suggests ~sqrt(lists) as a starting point), or move the index to HNSW,
+    # which holds recall far better at scale.
+    memory_ivfflat_probes: int = 100
 
     # Rate Limit Behavior
     rate_limit_fail_open: bool = False  # When True, allow requests if Redis is down

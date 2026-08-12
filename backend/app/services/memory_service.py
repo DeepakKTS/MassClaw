@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -66,6 +66,29 @@ class MemoryService:
         self.redis = redis
         self.settings = get_settings()
         self.embedding_service = get_embedding_service()
+
+    async def _set_ivfflat_probes(self) -> None:
+        """Widen the ivfflat search before a similarity query.
+
+        pgvector defaults ``ivfflat.probes`` to 1, meaning an approximate search
+        scans one of the index's 100 lists. On a large table that is a
+        reasonable speed/recall trade; on a small one it is a correctness bug,
+        because the single matching row is unlikely to live in the one list that
+        gets scanned. A record with cosine similarity 0.75 to the query was
+        reproducibly invisible at probes=1 and found at probes=100.
+
+        That made semantic search silently empty on any node whose memory table
+        is still small — a fresh deployment being the obvious case — and made
+        the test suite order-dependent, since it only passed once enough earlier
+        tests had populated embeddings.
+
+        ``SET LOCAL`` scopes this to the surrounding transaction, so it cannot
+        leak into other sessions on a pooled connection.
+        """
+        probes = max(1, int(self.settings.memory_ivfflat_probes))
+        # Not parameterisable: SET only accepts a literal. Coerced through int()
+        # above, so it cannot carry anything but digits.
+        await self.session.execute(text(f"SET LOCAL ivfflat.probes = {probes}"))
 
     async def write_memory(self, data: MemoryWriteRequest) -> MemoryRecord:
         """Write a memory record with embedding generation and version chain management.
@@ -216,6 +239,7 @@ class MemoryService:
         stmt = stmt.order_by(MemoryRecord.embedding.cosine_distance(query_embedding))
         stmt = stmt.limit(query.top_k * 2)  # Fetch extra for post-filter
 
+        await self._set_ivfflat_probes()
         result = await self.session.execute(stmt)
         rows = result.all()
 
