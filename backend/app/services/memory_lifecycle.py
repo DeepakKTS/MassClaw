@@ -224,6 +224,11 @@ class GCRunPolicy:
     archive_active_after_hours: int = _DEFAULT_HISTORICAL_AFTER_HOURS
     low_confidence_threshold: float = 0.01
     hard_delete_max_age_hours: int | None = None
+    #: Ceiling on live semantic cache entries; the oldest beyond it are
+    #: trimmed. ``None`` means "use settings.semantic_cache_max_entries",
+    #: which is the normal path — the field exists so a caller (or a test)
+    #: can pin the cap without touching global settings.
+    cache_max_entries: int | None = None
 
     def archive_cutoff(self, now: datetime | None = None) -> datetime:
         reference = now or datetime.now(UTC)

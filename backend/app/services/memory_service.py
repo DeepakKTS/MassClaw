@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
-from sqlalchemy import and_, delete, func, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -640,6 +640,9 @@ class MemoryService:
 
         Pipeline on every run:
 
+        0. Semantic cache entries (``memory_type='cache'``) are collected on
+           their own terms — see :meth:`_collect_semantic_cache`. Runs first so
+           they never enter the tombstone pipeline below.
         1. ACTIVE/SUPERSEDED records whose ``expires_at < now`` → TOMBSTONED.
         2. Tombstoned records older than ``tombstone_grace_hours`` → hard deleted.
         3. ACTIVE/SUPERSEDED records whose age exceeds
@@ -665,8 +668,13 @@ class MemoryService:
             "archived_to_historical": 0,
             "legacy_hard_deleted": 0,
             "old_hard_deleted": 0,
+            "cache_expired_deleted": 0,
+            "cache_trimmed": 0,
             "total_hard_deleted": 0,
         }
+
+        # 0. Semantic cache first, so its entries never reach step 1.
+        counts.update(await self._collect_semantic_cache(run_policy, now=now))
 
         # 1. Expire → tombstone (signed records) OR hard-delete (unsigned).
         #    LIMIT caps a single GC run so a big backlog can't OOM the
@@ -756,7 +764,11 @@ class MemoryService:
             counts["old_hard_deleted"] = len(old_result.all())
 
         counts["total_hard_deleted"] = (
-            counts["tombstone_hard_deleted"] + counts["legacy_hard_deleted"] + counts["old_hard_deleted"]
+            counts["tombstone_hard_deleted"]
+            + counts["legacy_hard_deleted"]
+            + counts["old_hard_deleted"]
+            + counts["cache_expired_deleted"]
+            + counts["cache_trimmed"]
         )
 
         await self.session.flush()
@@ -765,6 +777,72 @@ class MemoryService:
         any_change = any(v for v in counts.values() if isinstance(v, int))
         if any_change:
             logger.info("memory_gc_completed", **counts)
+        return counts
+
+    async def _collect_semantic_cache(
+        self,
+        run_policy: GCRunPolicy,
+        *,
+        now: datetime,
+    ) -> dict[str, int]:
+        """Evict semantic cache entries: expired ones, then the surplus.
+
+        Cache entries are unsigned by construction (``content_hash IS NULL``),
+        and every federation path — the Merkle summary, the by-hash fetch, the
+        gossip tick — selects on a non-null hash. No peer can observe one, so
+        they skip the tombstone → grace → delete dance that exists purely so
+        peers see the transition, and are hard-deleted directly. Leaving them
+        TOMBSTONED instead would keep dead embeddings in the ivfflat index,
+        where they cost recall on every lookup: the read takes the single
+        nearest neighbour, so one dead row sitting closest to a prompt hides a
+        live entry just behind it. An entry with no ``expires_at`` at all is
+        malformed by the same logic — nothing would ever evict it — so it goes
+        with them.
+
+        The cap is the part TTL cannot do. Entries are valid for 24h by
+        default, so an instance answering steadily writes far more than the cap
+        between two six-hourly sweeps; without a ceiling the table grows until
+        the TTL sweep catches up. Oldest-first is a deliberate approximation of
+        LRU — nothing records a last-read time, and adding a write to the read
+        path to get one would cost more than the eviction accuracy is worth.
+        """
+        deleted_expired = await self.session.execute(
+            delete(MemoryRecord)
+            .where(
+                and_(
+                    MemoryRecord.memory_type == MemoryType.CACHE,
+                    or_(
+                        MemoryRecord.expires_at.is_(None),
+                        MemoryRecord.expires_at < now,
+                        MemoryRecord.record_state != RecordState.ACTIVE,
+                    ),
+                )
+            )
+            .returning(MemoryRecord.memory_id)
+        )
+        counts = {"cache_expired_deleted": len(deleted_expired.all()), "cache_trimmed": 0}
+
+        cap = run_policy.cache_max_entries
+        if cap is None:
+            cap = int(self.settings.semantic_cache_max_entries)
+        if cap <= 0:
+            return counts
+
+        # OFFSET past the newest `cap` rows, so the DELETE targets exactly the
+        # surplus. LIMIT bounds a single run for the same reason the steps above
+        # do: a backlog must not OOM the worker.
+        surplus = (
+            select(MemoryRecord.memory_id)
+            .where(MemoryRecord.memory_type == MemoryType.CACHE)
+            .order_by(MemoryRecord.created_at.desc())
+            .offset(cap)
+            .limit(10_000)
+            .scalar_subquery()
+        )
+        trimmed = await self.session.execute(
+            delete(MemoryRecord).where(MemoryRecord.memory_id.in_(surplus)).returning(MemoryRecord.memory_id)
+        )
+        counts["cache_trimmed"] = len(trimmed.all())
         return counts
 
     async def _load_by_hash(self, content_hash: str) -> MemoryRecord | None:
