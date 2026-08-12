@@ -25,7 +25,7 @@ class AnthropicProvider(LLMProvider):
 
     provider_name = "anthropic"
 
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "claude-sonnet-5"
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -147,7 +147,19 @@ class AnthropicProvider(LLMProvider):
         async def _do_call() -> Any:
             return await self.client.messages.create(**kwargs)
 
-        return await _do_call()
+        try:
+            return await _do_call()
+        except anthropic.BadRequestError as exc:
+            # Newer model generations may drop support for params older
+            # generations required (e.g. `temperature`). Retry once without it.
+            if "temperature" in kwargs and "temperature" in str(exc).lower():
+                logger.warning(
+                    "anthropic_temperature_unsupported",
+                    model=kwargs.get("model"),
+                )
+                kwargs.pop("temperature")
+                return await _do_call()
+            raise
 
     async def stream(
         self,
@@ -169,33 +181,55 @@ class AnthropicProvider(LLMProvider):
         if system:
             kwargs["system"] = system
 
-        try:
-            async with self.client.messages.stream(**kwargs) as stream:
-                async for text in stream.text_stream:
-                    yield LLMChunk(content=text)
+        for attempt in range(2):
+            try:
+                async with self.client.messages.stream(**kwargs) as stream:
+                    async for text in stream.text_stream:
+                        yield LLMChunk(content=text)
 
-                # Final chunk with complete metadata
-                await stream.get_final_message()
+                    # Final chunk with complete metadata
+                    await stream.get_final_message()
+                    yield LLMChunk(
+                        content="",
+                        is_final=True,
+                    )
+                return
+            except anthropic.BadRequestError as exc:
+                # Newer model generations may drop support for params older
+                # generations required (e.g. `temperature`). Retry once without it.
+                if attempt == 0 and "temperature" in kwargs and "temperature" in str(exc).lower():
+                    logger.warning("anthropic_temperature_unsupported", model=model)
+                    kwargs.pop("temperature")
+                    continue
+                logger.error(
+                    "anthropic_stream_error",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    model=model,
+                )
                 yield LLMChunk(
                     content="",
                     is_final=True,
+                    error=f"Anthropic stream failed: {type(exc).__name__}: {exc}",
                 )
-        except (
-            anthropic.APIError,
-            anthropic.APIConnectionError,
-            anthropic.APITimeoutError,
-        ) as exc:
-            logger.error(
-                "anthropic_stream_error",
-                error=str(exc),
-                error_type=type(exc).__name__,
-                model=model,
-            )
-            yield LLMChunk(
-                content="",
-                is_final=True,
-                error=f"Anthropic stream failed: {type(exc).__name__}: {exc}",
-            )
+                return
+            except (
+                anthropic.APIError,
+                anthropic.APIConnectionError,
+                anthropic.APITimeoutError,
+            ) as exc:
+                logger.error(
+                    "anthropic_stream_error",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    model=model,
+                )
+                yield LLMChunk(
+                    content="",
+                    is_final=True,
+                    error=f"Anthropic stream failed: {type(exc).__name__}: {exc}",
+                )
+                return
 
     @staticmethod
     def _format_tools(tools: list[dict]) -> list[dict]:

@@ -10,10 +10,14 @@ logger = get_logger(__name__)
 # Source: Anthropic and OpenAI published pricing
 PRICING_TABLE: dict[str, dict[str, float]] = {
     # Anthropic Claude models
+    "claude-opus-5": {"input": 15.00, "output": 75.00},
+    "claude-sonnet-5": {"input": 3.00, "output": 15.00},
+    "claude-fable-5": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
+    # Retired model IDs — kept for pricing lookups on historical records
     "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
     "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
     "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.00},
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
     # Aliases
     "claude-opus": {"input": 15.00, "output": 75.00},
     "claude-sonnet": {"input": 3.00, "output": 15.00},

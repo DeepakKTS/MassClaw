@@ -144,7 +144,7 @@ class ReflectionEngine:
         try:
             response = await self.router.generate(
                 prompt=REFLECTION_PROMPT.format(goal=goal_description, outputs=outputs_text),
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 max_tokens=300,
                 temperature=0.1,
             )

@@ -608,11 +608,11 @@ class WorkflowScheduler:
                     model = "claude-haiku-4-5-20251001"
                     max_tok = 1000
                 elif node.capability in SONNET_CAPABILITIES or node.estimated_complexity == "high":
-                    model = "claude-sonnet-4-20250514"
+                    model = "claude-sonnet-5"
                     max_tok = 2000
                 else:
                     # Default: Sonnet for unknown capabilities
-                    model = "claude-sonnet-4-20250514"
+                    model = "claude-sonnet-5"
                     max_tok = 1200
 
                 # Strategy 3: Semantic Result Cache — check before calling LLM

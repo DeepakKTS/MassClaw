@@ -79,7 +79,7 @@ class OutputSynthesizer:
         response: LLMResponse = await self.router.generate(
             prompt=user_msg,
             system=SYNTHESIS_SYSTEM_PROMPT,
-            model="claude-sonnet-4-20250514",  # Sonnet for high-quality synthesis
+            model="claude-sonnet-5",  # Sonnet for high-quality synthesis
             max_tokens=3000,
             temperature=0.5,
         )

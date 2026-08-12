@@ -49,7 +49,7 @@ class GoalInterpreter:
         try:
             response = await self.router.generate(
                 prompt=GOAL_INTERPRETATION_PROMPT.format(prompt=prompt),
-                model="claude-sonnet-4-20250514",  # Haiku for cheap structured parsing
+                model="claude-sonnet-5",  # Haiku for cheap structured parsing
                 max_tokens=300,
                 temperature=0.1,
             )
