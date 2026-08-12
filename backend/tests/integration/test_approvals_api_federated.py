@@ -204,6 +204,12 @@ class TestStreamEndpoint:
         (``curl -N /api/v1/approvals/stream``) — a full ASGI round-trip
         here would hang the test runner on the open pubsub connection.
         We at least confirm the route is wired so a misnamed path can't
-        slip past."""
-        paths = {getattr(route, "path", "") for route in app.router.routes}
-        assert "/api/v1/approvals/stream" in paths
+        slip past.
+
+        Enumerated through ``app.openapi()`` rather than by walking
+        ``app.router.routes``: as of FastAPI 0.141 ``include_router`` keeps
+        a sub-router nested behind an internal wrapper object instead of
+        flattening its routes into the parent, so that walk reports no
+        path at all for anything mounted under a prefix.
+        """
+        assert "/api/v1/approvals/stream" in app.openapi()["paths"]

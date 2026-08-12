@@ -1,0 +1,71 @@
+# CI dependency constraints — pins the volatile pure-Python stack.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# pyproject.toml declares deliberately wide ranges so developers can move
+# forward. CI used to install those ranges directly, which meant it resolved
+# whatever was newest on the day it ran, while a developer's environment
+# stayed on whatever it happened to install months earlier. That is not a
+# theoretical problem:
+#
+#   On 2026-08-12 CI went red on a commit that only touched app/llm/,
+#   app/intelligence/ and app/orchestration/. The actual cause was that
+#   `fastapi` had no upper bound on `starlette` (fastapi 0.136 declares
+#   only `starlette>=0.46.0`), so CI resolved starlette 1.0.0 -> 1.6.0 and
+#   fastapi 0.136 -> 0.141. FastAPI 0.141 stopped flattening included
+#   sub-routers into the parent router, which broke two tests that walked
+#   `app.router.routes` to check a path was mounted. `make ci-local` passed
+#   the whole time, because the local env was frozen at the older versions.
+#
+# So: pin the packages whose drift changes framework behaviour, and pin them
+# to the versions the suite is actually tested against.
+#
+# WHY NOT A FULL LOCKFILE
+# -----------------------
+# Two concrete blockers, both verified rather than assumed:
+#   1. `pip freeze` in the dev env emits the editable install as
+#      `-e git+https://<user>:<token>@github.com/...` — committing that would
+#      leak a GitHub PAT into the repository.
+#   2. torch resolves per-platform. The dev env has the macOS wheel
+#      (torch 2.11.0, no CUDA); on Linux pip pulls the CUDA build with a
+#      different set of `nvidia-*` transitive deps. A macOS freeze does not
+#      resolve on the CI runner.
+# Pinning the platform-independent stack avoids both while still removing the
+# drift that actually breaks builds. Heavy ML deps stay range-resolved.
+#
+# HOW TO BUMP
+# -----------
+# Change a pin here, run `make ci-local`, and commit the pin together with
+# whatever code change the new version requires. That makes every upgrade an
+# explicit, reviewable step instead of a surprise on an unrelated push.
+#
+# NOT PINNED ON PURPOSE
+# ---------------------
+# pytest / pytest-asyncio: the dev env runs pytest 9.0.3 + pytest-asyncio
+# 1.3.0, which are outside the ranges pyproject.toml declares
+# (`pytest<9.0`, `pytest-asyncio<1.0`), so pinning the dev versions here
+# would make the install unsatisfiable. Reconcile pyproject first, then pin.
+
+# --- ASGI / web framework: the stack that broke ---
+fastapi==0.136.0
+starlette==1.0.0
+sse-starlette==2.4.1
+uvicorn==0.44.0
+anyio==4.13.0
+
+# --- Validation ---
+pydantic==2.13.1
+pydantic-settings==2.13.1
+
+# --- HTTP client (also the test transport) ---
+httpx==0.28.1
+httpcore==1.0.9
+
+# --- Database ---
+sqlalchemy==2.0.49
+alembic==1.18.4
+asyncpg==0.31.0
+pgvector==0.4.2
+
+# --- Lint: a new ruff release can add rules and fail CI with no code change ---
+ruff==0.15.11

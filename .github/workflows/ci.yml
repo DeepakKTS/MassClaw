@@ -6,14 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+# Supersede in-flight runs for the same ref — a rapid push sequence should
+# not leave several full backend jobs racing for the same runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.12"
-  NODE_VERSION: "18"
+  # Matches frontend/Dockerfile. Node 18 went end-of-life in April 2025.
+  NODE_VERSION: "20"
 
 jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     services:
       postgres:
@@ -59,7 +67,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/constraints.txt
 
       - name: Cache sentence-transformers model
         uses: actions/cache@v4
@@ -67,9 +77,13 @@ jobs:
           path: .cache/sentence-transformers
           key: sentence-transformers-all-MiniLM-L6-v2-${{ runner.os }}
 
+      # constraints.txt pins the pure-Python framework stack to the versions
+      # the suite is tested against. Without it CI resolves whatever is
+      # newest that day — which is how an unrelated commit went red once
+      # (fastapi declares no upper bound on starlette). See the file header.
       - name: Install dependencies
         working-directory: backend
-        run: pip install ".[dev]"
+        run: pip install -c constraints.txt ".[dev]"
 
       - name: Lint
         working-directory: backend
@@ -102,6 +116,7 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4

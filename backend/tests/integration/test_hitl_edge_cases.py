@@ -469,9 +469,12 @@ class TestJanitor:
 class TestSSE:
     def test_stream_route_registered(self) -> None:
         """Sanity check the SSE route is mounted; live streaming is covered
-        by the out-of-process smoke test."""
-        paths = {getattr(route, "path", "") for route in app.router.routes}
-        assert "/api/v1/approvals/stream" in paths
+        by the out-of-process smoke test.
+
+        Uses ``app.openapi()`` because FastAPI 0.141+ no longer flattens
+        included sub-routers into ``app.router.routes``.
+        """
+        assert "/api/v1/approvals/stream" in app.openapi()["paths"]
 
 
 # ---------------------------------------------------------------------------

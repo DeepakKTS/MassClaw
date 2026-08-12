@@ -65,7 +65,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.guard.outputs.skip == 'false'
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
       - if: steps.guard.outputs.skip == 'false'
         name: Deploy
         env:
@@ -91,7 +91,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.guard.outputs.skip == 'false'
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
       - if: steps.guard.outputs.skip == 'false'
         name: Deploy
         env:
@@ -117,7 +117,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.guard.outputs.skip == 'false'
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.6
       - if: steps.guard.outputs.skip == 'false'
         name: Deploy
         env:
