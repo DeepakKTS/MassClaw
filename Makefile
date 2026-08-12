@@ -1,6 +1,6 @@
 .PHONY: help dev backend frontend celery-worker celery-beat \
 	migrate migrate-create migrate-rollback seed \
-	test test-unit test-integration test-e2e test-cov \
+	test test-db-setup test-unit test-integration test-e2e test-cov \
 	lint format typecheck ci-local clean \
 	docker-up docker-down docker-logs \
 	federation-up federation-down federation-test federation-summary \
@@ -52,6 +52,28 @@ seed: ## Seed database with development data
 	cd backend && python -m scripts.seed_agents
 
 # Testing
+#
+# The suite runs against a dedicated `<db>_test` database and Redis db 9 —
+# tests/conftest.py rewrites the URLs at import time and refuses to start if
+# they do not point somewhere disposable. Run test-db-setup once per machine.
+test-db-setup: ## Create the test database and its extensions (needs superuser once)
+	@set -e; \
+	db="$${TEST_DB:-massclaw_test}"; \
+	echo "==> creating database $$db (owner: massclaw)"; \
+	PGPASSWORD=massclaw psql -h localhost -U massclaw -d massclaw \
+		-tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 \
+		&& echo "    already exists" \
+		|| PGPASSWORD=massclaw createdb -h localhost -U massclaw "$$db"; \
+	echo "==> installing extensions"; \
+	echo "    pg_trgm is a trusted extension, so the massclaw role can add it;"; \
+	echo "    vector is not, so this step connects as your local superuser."; \
+	PGPASSWORD=massclaw psql -h localhost -U massclaw -d "$$db" \
+		-c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" >/dev/null; \
+	psql -d "$$db" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null; \
+	echo "==> extensions present:"; \
+	psql -d "$$db" -tAc "SELECT '    ' || extname FROM pg_extension ORDER BY 1"; \
+	echo "Test database ready. Tables are created by conftest on first run."
+
 test: ## Run all backend tests
 	cd backend && pytest -v --tb=short
 
