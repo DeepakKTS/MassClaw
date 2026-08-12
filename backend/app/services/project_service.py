@@ -281,17 +281,26 @@ class ProjectService:
         task_ids: list[uuid.UUID],
     ) -> None:
         """Bulk-reorder sprint tasks by setting positions according to the list order."""
-        for position, task_id in enumerate(task_ids):
-            result = await self.session.execute(
-                select(SprintTask).where(
-                    SprintTask.sprint_task_id == task_id,
-                    SprintTask.sprint_id == sprint_id,
-                )
+        if not task_ids:
+            return
+
+        # One fetch for the whole batch instead of a SELECT per task. The set
+        # difference also gives a better error: the first *missing* id, rather
+        # than whichever one the loop happened to reach first.
+        result = await self.session.execute(
+            select(SprintTask).where(
+                SprintTask.sprint_task_id.in_(task_ids),
+                SprintTask.sprint_id == sprint_id,
             )
-            sprint_task = result.scalar_one_or_none()
-            if sprint_task is None:
-                raise NotFoundError("SprintTask", str(task_id))
-            sprint_task.position = position
+        )
+        by_id = {task.sprint_task_id: task for task in result.scalars().all()}
+
+        missing = [task_id for task_id in task_ids if task_id not in by_id]
+        if missing:
+            raise NotFoundError("SprintTask", str(missing[0]))
+
+        for position, task_id in enumerate(task_ids):
+            by_id[task_id].position = position
 
         await self.session.flush()
         logger.info(

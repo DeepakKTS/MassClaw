@@ -88,14 +88,26 @@ async def discover_capabilities() -> dict:
         )
         agent_count = count_result.scalar() or 0
 
-        # Get all unique capabilities
-        agents_result = await session.execute(select(Agent.capabilities).where(Agent.status == AgentStatus.ACTIVE))
-        all_caps = set()
+        # Get all unique capabilities.
+        #
+        # Unnested and de-duplicated in Postgres rather than pulled into a
+        # Python set. This is the primary discovery endpoint for external
+        # agents and the query had no limit, so the rows transferred grew with
+        # the agent count; the result is now bounded by the number of
+        # *distinct* capabilities instead.
+        #
+        # The jsonb_typeof guard preserves the previous isinstance(caps, list)
+        # tolerance — jsonb_array_elements_text raises on a non-array value.
+        caps_result = await session.execute(
+            select(func.jsonb_array_elements_text(Agent.capabilities).label("capability"))
+            .where(
+                Agent.status == AgentStatus.ACTIVE,
+                func.jsonb_typeof(Agent.capabilities) == "array",
+            )
+            .distinct()
+        )
+        all_caps = {row.capability for row in caps_result}
         all_domains = set()
-        for row in agents_result:
-            caps = row[0]
-            if isinstance(caps, list):
-                all_caps.update(caps)
 
         # Get domains from recent workflows
         from app.models.workflow import Workflow

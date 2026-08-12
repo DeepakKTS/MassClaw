@@ -25,6 +25,7 @@ up, in :mod:`app.api.approvals`.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select
@@ -249,18 +250,39 @@ class FederatedApprovalStore:
 
     async def find_by_request_id(self, request_id: str) -> ApprovalRequest | None:
         """Return the latest state (pending/decided) for a request, or None."""
-        latest_decision: ApprovalRequest | None = None
-        latest_pending: ApprovalRequest | None = None
+        return (await self.find_many_by_request_id([request_id])).get(request_id)
+
+    async def find_many_by_request_id(
+        self,
+        request_ids: Iterable[str],
+    ) -> dict[str, ApprovalRequest]:
+        """Latest state for several requests in a single scan.
+
+        Same resolution rule as :meth:`find_by_request_id` — a decision beats a
+        pending record, and ``_scan`` returns newest first so the first match in
+        each class wins. Callers holding a list of ids used to loop over the
+        single-id lookup, and since every call rescans *all* ``META`` records
+        that made a page of approvals cost one full scan per row.
+
+        Ids with no record are absent from the result rather than mapped to
+        ``None``, so ``.get(id)`` reproduces the old return value exactly.
+        """
+        wanted = set(request_ids)
+        if not wanted:
+            return {}
+
+        decisions: dict[str, ApprovalRequest] = {}
+        pendings: dict[str, ApprovalRequest] = {}
         for record in await self._scan():
             req = _decode_record(record)
-            if req is None or req.request_id != request_id:
+            if req is None or req.request_id not in wanted:
                 continue
             if req.status == "pending":
-                if latest_pending is None:
-                    latest_pending = req
-            elif latest_decision is None:
-                latest_decision = req
-        return latest_decision or latest_pending
+                pendings.setdefault(req.request_id, req)
+            else:
+                decisions.setdefault(req.request_id, req)
+
+        return {rid: decisions.get(rid) or pendings[rid] for rid in pendings.keys() | decisions.keys()}
 
     async def find_decision_for_node(
         self,

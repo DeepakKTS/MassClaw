@@ -133,8 +133,14 @@ async def list_pending_approvals(
         crdt_pending = await store.get_pending()
         # Any request_id that has a decision record in CRDT but still
         # shows as pending locally should be suppressed.
+        #
+        # One batched lookup rather than find_by_request_id per row: each of
+        # those rescanned every META record, so a page of approvals cost one
+        # full scan per row. Federated is the default, so this ran on every
+        # page load and every SSE-triggered refetch.
+        latest_by_id = await store.find_many_by_request_id(req.request_id for req in redis_pending)
         for req in redis_pending:
-            latest = await store.find_by_request_id(req.request_id)
+            latest = latest_by_id.get(req.request_id)
             if latest is not None and latest.status != "pending":
                 decided_in_crdt.add(req.request_id)
     except Exception as exc:
